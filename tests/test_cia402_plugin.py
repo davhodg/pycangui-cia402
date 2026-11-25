@@ -15,15 +15,18 @@ with what to write.
 """
 
 import struct
+from pathlib import Path
 
 import pytest
+from pycangui.core import plugin_package
+from pycangui.ui.main_window import MainWindow
 from PySide6.QtCore import QSettings
 
-from pycangui.core import plugin_package
-from pycangui.core.plugins import builtin_dir
-from pycangui.plugins.cia402 import drive as cia402
-from pycangui.plugins.cia402.plugin import MAKER_NONE_SET, maker_bits
-from pycangui.ui.main_window import MainWindow
+from cia402 import drive as cia402
+from cia402.plugin import MAKER_NONE_SET, maker_bits
+
+#: The repository, whose cia402 folder is the plugin as it is installed.
+ROOT = Path(__file__).resolve().parents[1]
 
 #: Statuswords as a drive really sends them: the state bits, plus voltage
 #: enabled and remote, which are set on anything that is powered and listening.
@@ -228,7 +231,7 @@ def test_a_drive_that_answers_with_fewer_bytes_than_asked_is_not_an_error():
 
 # --- and as a plugin -----------------------------------------------------------------------------
 def install(window) -> None:
-    plugin_package.install_folder(builtin_dir() / "cia402", window.ctx.workspace_dir / "plugins")
+    plugin_package.install_folder(ROOT / "cia402", window.ctx.workspace_dir / "plugins")
     window._reload_plugins()
 
 
@@ -953,7 +956,7 @@ def test_its_values_are_in_pycangui_s_fixed_pitch_font(view):
 def test_a_pause_or_stop_all_puts_the_drive_in_its_safe_state(app, window, view, monkeypatch):
     """The global stop reaches the plugin: a running drive is halted and its
     polling unticked, as when its pane is closed."""
-    from pycangui.plugins.cia402 import plugin
+    from cia402 import plugin
 
     halted = []
     monkeypatch.setattr(
