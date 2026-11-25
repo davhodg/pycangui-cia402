@@ -8,7 +8,9 @@
     python build/pack.py v2.0       the zip, refused unless the tag is VERSION
 
 The same files make the same zip, byte for byte, on any machine: the entries
-are sorted, dated 1980, and their line endings LF whatever the checkout has.
+are sorted, dated 1980, their line endings LF whatever the checkout has, and
+stored rather than compressed -- zlib's output differs between builds of it,
+which is what Linux and Windows have.
 That is what lets plugins.json carry the zip's sha256 before the release
 exists, and pycangui refuse a download that does not match it.
 """
@@ -54,7 +56,8 @@ def pack(dest: Path) -> Path:
     with zipfile.ZipFile(dest, "w") as archive:
         for path in files:
             member = zipfile.ZipInfo(f"{NAME}/{path.relative_to(FOLDER).as_posix()}", EPOCH)
-            member.compress_type = zipfile.ZIP_DEFLATED
+            member.compress_type = zipfile.ZIP_STORED
+            member.create_system = 3  # Unix, whatever packs it: it is in the header
             member.external_attr = 0o644 << 16
             archive.writestr(member, path.read_bytes().replace(b"\r\n", b"\n"))
     return dest
