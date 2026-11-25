@@ -50,4 +50,4 @@ makes a GitHub release with the zip; `python build/pack.py` makes the same zip l
 Apache-2.0, as pycangui: see [LICENSE](LICENSE).
 
 CANopen® and CiA® are registered trademarks of CAN in Automation e.V. This project is not
-affiliated with or endorsed by CAN in Automation.
+affiliated with CAN in Automation.
