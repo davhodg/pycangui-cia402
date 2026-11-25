@@ -19,8 +19,12 @@ when enabled is the drive's and its setup's. Try it on a bench first.
 It needs pycangui with plugin API 3, which is in the release after 0.6.2; until then,
 pycangui from master.
 
-1. Download `cia402-<version>.zip` from [Releases](../../releases).
-2. In pycangui, *Plugins > Install plugin...* and choose the zip.
+In pycangui, *Plugins > Manage plugins...*, *Check for plugins*, then choose it and
+*Install*. pycangui finds it through this repository's [plugins.json](plugins.json),
+which its own plugin list includes.
+
+Or download `cia402-<version>.zip` from [Releases](../../releases) and use *Plugins >
+Install plugin...*.
 
 pycangui 0.6 and earlier ship an older version of this plugin, under *Plugins > Supplied
 with pycangui*.
@@ -42,8 +46,12 @@ folder (*Plugins > Open plugins folder*) and use *Plugins > Reload plugins*.
 
 ## Releasing
 
-Set `VERSION` in `cia402/plugin.py`, commit, and push a tag `v<VERSION>`. CI tests it and
-makes a GitHub release with the zip; `python build/pack.py` makes the same zip locally.
+1. Set `VERSION` in `cia402/plugin.py`.
+2. `python build/pack.py --list` writes `plugins.json` for the new zip: its version, URL
+   and sha256. The zip is the same byte for byte on any machine, so the sha256 is known
+   before the release exists. CI fails while `plugins.json` does not match.
+3. Commit both, and push a tag `v<VERSION>`. CI tests it and makes a GitHub release with
+   the zip, which is the file `plugins.json` points to.
 
 ## Licence
 
