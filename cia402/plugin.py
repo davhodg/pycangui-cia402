@@ -246,6 +246,10 @@ class MotorView(QWidget):
         self.statusword = 0
         self.mode = 0
         self._busy = False
+        #: How many times the demand has been stopped. A command of several
+        #: steps notes it when it starts and sends nothing more once it moves:
+        #: see ``_still``.
+        self._stops = 0
         #: Nothing has been read yet, so the state is not "Not ready to switch
         #: on" -- it is unknown, and saying the first would be inventing news.
         self._read_something = False
@@ -1166,9 +1170,12 @@ class MotorView(QWidget):
         drive = self._drive()
         if drive is None or self._busy:
             return
+        stops = self._stops
 
         def planned(value, error) -> None:
             self._busy = False
+            if not self._still(stops):
+                return
             if error:
                 self.app.warn(f"Reading the statusword failed: {error}")
                 return
@@ -1200,14 +1207,19 @@ class MotorView(QWidget):
             return
 
         held = self._maker_bits() | cia402.operation_bits(self.mode)
+        stops = self._stops
 
         def job():
             for step in steps:
+                if not self._still(stops):
+                    return None
                 drive.write(cia402.CONTROLWORD, step.controlword | held)
             return steps[-1].what
 
         def done(_last, error) -> None:
             self._busy = False
+            if not self._still(stops):
+                return
             if error:
                 self.app.warn(f"{steps[0].what} failed: {error}")
                 return
@@ -1268,8 +1280,16 @@ class MotorView(QWidget):
             self.app.warn(str(exc))
             return
 
+        stops = self._stops
+
+        def job() -> None:
+            if self._still(stops):
+                drive.write(obj, value)
+
         def done(_result, error) -> None:
             self._busy = False
+            if not self._still(stops):
+                return
             if error:
                 self.app.warn(f"Writing {obj.name} failed: {error}")
                 return
@@ -1278,7 +1298,21 @@ class MotorView(QWidget):
                 then()
 
         self._busy = True
-        self._background(lambda: drive.write(obj, value), done)
+        self._background(job, done)
+
+    def _still(self, stops: int) -> bool:
+        """Whether no stop has been sent since a command noted ``stops``.
+
+        A command is often more than one write: a target, then the controlword
+        that takes the halt off; a statusword read, then the steps to enable.
+        The stop goes there and then, on the GUI thread, while the rest of such
+        a command may still be queued, or waiting for the GUI thread to send
+        it. Sent after the stop, the rest would undo it -- the halt taken off,
+        or the drive enabled again -- so it is not sent. Checked again before
+        each write on the worker, which narrows the gap to a write already
+        going when the stop was made.
+        """
+        return stops == self._stops
 
     # --- and stopping when nobody is looking ------------------------------------------------
     def set_visible_to_user(self, on: bool) -> None:
@@ -1327,6 +1361,9 @@ class MotorView(QWidget):
         would look like one. A close that pauses for an SDO timeout is a fair
         price.
         """
+        # First, and even with nothing to write: whatever a command still had
+        # to send would undo the stop, or start what it has just put down.
+        self._stops += 1
         node = self._label()
         writes = cia402.stop_writes(self.mode, self.statusword, self.disable_too.isChecked())
         if not writes:

@@ -1033,6 +1033,96 @@ def test_a_profile_velocity_target_takes_the_halt_off(app, view, monkeypatch):
     ]
 
 
+def held_back(view, monkeypatch, mode=3):
+    """A pane turning a drive, with the worker's jobs queued rather than run,
+    so a stop can come between the steps of a command. ``step()`` runs the
+    next job and hands its answer back, as the worker would."""
+    drive = wired(view, monkeypatch, ENABLED)
+    view._took(cia402.MODE_DISPLAY, mode)
+    view._took(cia402.STATUSWORD, ENABLED)
+    queue = []
+    monkeypatch.setattr(view, "_background", lambda job, done: queue.append((job, done)))
+
+    def step(answer_after=None):
+        job, done = queue.pop(0)
+        result = job()
+        if answer_after is not None:
+            answer_after()
+        done(result, None)
+
+    return drive, queue, step
+
+
+def controlwords(drive) -> list[int]:
+    return [value for index, value in drive.written if index == cia402.CONTROLWORD.index]
+
+
+def test_a_stop_while_a_target_is_set_is_not_undone_by_its_halt_release(app, view, monkeypatch):
+    """Set target writes the target, then the controlword that takes the halt
+    off. A stop between the two used to be followed by that release, leaving
+    the drive enabled with the halt off after the pane said it had stopped it."""
+    drive, queue, step = held_back(view, monkeypatch)
+    view.target.setValue(1500)
+    view._write_target()
+    step()  # the target taken: the release is queued next
+    assert queue
+    view.stop_demand(background=False)
+    while queue:
+        step()
+    assert controlwords(drive)[-1] & cia402.HALT
+    assert drive.written[-1] == (cia402.TARGET_VELOCITY.index, 0)
+
+
+def test_a_stop_before_the_target_was_answered_sends_no_release(app, view, monkeypatch):
+    """The same, with the stop made while the target's write was on its way:
+    its answer comes after the stop, and nothing follows it."""
+    drive, queue, step = held_back(view, monkeypatch)
+    view.target.setValue(1500)
+    view._write_target()
+    step(answer_after=lambda: view.stop_demand(background=False))
+    assert not queue
+    assert controlwords(drive)[-1] & cia402.HALT
+
+
+def test_a_write_queued_before_a_stop_is_not_sent_after_it(app, view, monkeypatch):
+    drive, queue, step = held_back(view, monkeypatch)
+    view.target.setValue(1500)
+    view._write_target()
+    view.stop_demand(background=False)
+    stopped = list(drive.written)
+    while queue:
+        step()
+    assert drive.written == stopped, "the target went after the stop had zeroed it"
+
+
+def test_an_enable_planned_before_a_stop_is_not_carried_out(app, view, monkeypatch):
+    """Enable reads the statusword, then writes the steps: a stop in between
+    must not be followed by the drive being switched on again."""
+    drive, queue, step = held_back(view, monkeypatch)
+    drive.statusword = SWITCH_ON_DISABLED
+    view._command(lambda: cia402.steps_to_enable(view.statusword))
+    step(answer_after=lambda: view.stop_demand(background=False))
+    while queue:
+        step()
+    assert all(word & cia402.HALT for word in controlwords(drive)), drive.written
+
+
+def test_a_command_after_a_stop_goes_through(app, view, monkeypatch):
+    """A stop cancels what was under way, not what is asked for after it."""
+    drive, queue, step = held_back(view, monkeypatch)
+    view.stop_demand(background=False)
+    view._took(cia402.STATUSWORD, ENABLED)
+    drive.written.clear()
+    view.target.setValue(1500)
+    view._write_target()
+    while queue:
+        step()
+    assert drive.written == [
+        (cia402.TARGET_VELOCITY.index, 1500),
+        (cia402.CONTROLWORD.index, cia402.ENABLE_OPERATION),
+    ]
+
+
 def test_a_target_enables_nothing_and_profile_position_waits_for_go():
     assert cia402.word_after_target(3, SWITCH_ON_DISABLED) is None, "enabling is asked first"
     assert cia402.word_after_target(1, ENABLED) is None, "Go writes its own"
