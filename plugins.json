@@ -3,12 +3,12 @@
   "plugins": [
     {
       "name": "cia402",
-      "title": "CANopen motor control (CiA 402)",
+      "title": "Motor control (CiA 402)",
       "description": "Drives a motor controller: its state, its mode, its target and what it is doing.",
-      "version": "2.0",
+      "version": "2.1",
       "api_version": 3,
-      "url": "https://github.com/davhodg/pycangui-cia402/releases/download/v2.0/cia402-2.0.zip",
-      "sha256": "fea41f7d77f89b2835617ef77c01eaeec2b457494258e3d47be332085607d9a1",
+      "url": "https://github.com/davhodg/pycangui-cia402/releases/download/v2.1/cia402-2.1.zip",
+      "sha256": "45b661b8ac05d990df59126da8b902a9f3045ffd791e8bc1c1e004b762c0fb7c",
       "page": "https://github.com/davhodg/pycangui-cia402"
     }
   ]

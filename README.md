@@ -1,6 +1,6 @@
 # pycangui-cia402
 
-CANopen motor control (CiA 402) for [pycangui](https://github.com/davhodg/pycangui): a
+Motor control (CiA 402) for [pycangui](https://github.com/davhodg/pycangui): a
 plugin that drives a motor controller -- its state, its mode, its target and what it is
 actually doing.
 
@@ -9,6 +9,11 @@ What needs a plugin is the state machine: the walk to *Operation enabled* is a s
 writes where each depends on what the drive answered to the last, and the state is decoded
 from overlapping masks of the statusword. [docs/cia402.md](docs/cia402.md) is the whole
 of what it does.
+
+It drives whatever pycangui lists as a device: a CANopen node, or a drive another plugin
+provides -- an EtherCAT slave from [pycangui-ethercat](https://github.com/davhodg/pycangui-ethercat),
+say, whose process data it then writes through the ring's cycle. A drive about to go out of
+reach on purpose, an EtherCAT ring scanned or stopped, is halted first.
 
 **It moves real motors.** It asks before enabling a drive, halts it when its pane is put
 away or pycangui closes, and says loudly when a motor is live -- but what a drive does

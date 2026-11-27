@@ -20,9 +20,10 @@ from pathlib import Path
 import pytest
 from pycangui.core import plugin_package
 from pycangui.ui.main_window import MainWindow
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QObject, QSettings, Signal
 
 from cia402 import drive as cia402
+from cia402 import plugin
 from cia402.plugin import MAKER_NONE_SET, maker_bits
 
 #: The repository, whose cia402 folder is the plugin as it is installed.
@@ -254,9 +255,9 @@ def view(window):
 
 
 def test_it_installs_and_brings_a_pane(app, window, view):
-    assert "CANopen motor control (CiA 402)" in [r.label for r in window.plugins.working()]
+    assert plugin.NAME in [r.label for r in window.plugins.working()]
     assert window.plugins.errors() == {}
-    assert window.panes.docks["cia402:main"].windowTitle() == "CANopen motor control"
+    assert window.panes.docks["cia402:main"].windowTitle() == plugin.TITLE
 
 
 def test_it_says_nothing_has_been_read_rather_than_inventing_a_state(app, view):
@@ -956,7 +957,6 @@ def test_its_values_are_in_pycangui_s_fixed_pitch_font(view):
 def test_a_pause_or_stop_all_puts_the_drive_in_its_safe_state(app, window, view, monkeypatch):
     """The global stop reaches the plugin: a running drive is halted and its
     polling unticked, as when its pane is closed."""
-    from cia402 import plugin
 
     halted = []
     monkeypatch.setattr(
@@ -1154,3 +1154,113 @@ def test_start_asks_first_and_pre_operational_does_not(
 def test_with_no_node_the_nmt_buttons_are_off(app, view):
     view._forget()
     assert not view.start_btn.isEnabled() and not view.pre_op_btn.isEnabled()
+
+
+# --- a device another plugin provides --------------------------------------------------------
+class ProvidedDrive(QObject):
+    """A drive by a protocol pycangui does not speak, as a plugin provides one:
+    its objects by index, no states of pycangui's to set, and gone on purpose
+    when its plugin says so."""
+
+    changed = Signal()
+    state_changed = Signal()
+    leaving = Signal()
+    key = ("other", 1)
+    label = "Other 1"
+    states = ()
+
+    def __init__(self):
+        super().__init__()
+        self.up = True
+        self.objects = {cia402.STATUSWORD.where: ENABLED.to_bytes(2, "little")}
+        self.written: list[tuple] = []
+
+    def available(self):
+        return self.up
+
+    def background(self, job, done):
+        done(job(), None)
+
+    def read(self, index, sub):
+        return self.objects.get((index, sub), b"\x00\x00\x00\x00")
+
+    def write(self, index, sub, data):
+        if not self.up:
+            raise RuntimeError("out of reach")
+        self.written.append((index, int.from_bytes(data, "little", signed=True)))
+
+    def has(self, index, sub=0):
+        return None
+
+    def state(self):
+        return None, not self.up
+
+    def receives(self):
+        return []
+
+
+class Provider(QObject):
+    changed = Signal()
+
+    def __init__(self, *drives):
+        super().__init__()
+        self.drives = list(drives)
+
+    def devices(self):
+        return list(self.drives)
+
+    def device(self, key):
+        return next((d for d in self.drives if d.key == key), None)
+
+
+def provided(app, window, view, mode=3):
+    """The pane driving a provided drive it believes is turning."""
+    drive = ProvidedDrive()
+    window.devices.add_provider(Provider(drive))
+    app.processEvents()
+    view.node.setCurrentIndex(view.node.findData(drive.key))
+    view._took(cia402.MODE_DISPLAY, mode)
+    view._took(cia402.STATUSWORD, ENABLED)
+    return drive
+
+
+def errors_said(window):
+    said = []
+    window.ctx.events.posted.connect(lambda _message, level: said.append(level))
+    return said
+
+
+def test_a_provided_drive_is_in_the_list_without_the_nmt_buttons(app, window, view):
+    drive = provided(app, window, view)
+    assert view.node.currentData() == drive.key
+    assert view._device() is drive
+    assert view.start_btn.isHidden() and view.pre_op_btn.isHidden()
+    assert view.rpdo_warning.isHidden()
+
+
+def test_a_drive_about_to_go_out_of_reach_is_stopped_first(app, window, view):
+    drive = provided(app, window, view)
+    said = errors_said(window)
+    drive.leaving.emit()
+    assert drive.written == [
+        (cia402.CONTROLWORD.index, cia402.ENABLE_OPERATION | cia402.HALT),
+        (cia402.TARGET_VELOCITY.index, 0),
+    ]
+    drive.up = False
+    drive.state_changed.emit()
+    assert "error" not in said, "stopped before it went: nothing to warn of"
+
+
+def test_a_drive_gone_out_of_reach_while_enabled_is_said_once(app, window, view):
+    drive = provided(app, window, view)
+    said = errors_said(window)
+    drive.up = False
+    drive.state_changed.emit()
+    drive.state_changed.emit()
+    assert said.count("error") == 1
+
+    drive.up = True
+    drive.state_changed.emit()
+    drive.up = False
+    drive.state_changed.emit()
+    assert said.count("error") == 2, "said again after it came back and went again"

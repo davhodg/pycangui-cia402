@@ -48,8 +48,10 @@ from .drive import Drive, Object
 API_VERSION = 3
 
 
-NAME = "CANopen motor control (CiA 402)"
-VERSION = "2.0"
+NAME = "Motor control (CiA 402)"
+#: The pane's title: a CANopen node or a drive another plugin provides.
+TITLE = "Motor control"
+VERSION = "2.1"
 DESCRIPTION = "Drive state machine, modes and targets by CiA 402."
 
 ENABLE_TITLE = "Enable the drive?"
@@ -93,6 +95,13 @@ COULD_NOT_STOP = (
 )
 BUS_GONE = (
     "The bus closed while {node} was enabled. It is still acting on the "
+    "last target it was given, and nothing here can stop it now."
+)
+#: Why the demand was taken away, for STOPPED, when the device was about to go
+#: out of reach on purpose: an EtherCAT ring scanned or stopped, say.
+LEAVING = "it was about to go out of reach"
+GONE = (
+    "{node} went out of reach while it was enabled. It is still acting on the "
     "last target it was given, and nothing here can stop it now."
 )
 
@@ -259,6 +268,9 @@ class MotorView(QWidget):
         self.node.currentIndexChanged.connect(lambda _i: self._forget())
         #: The device whose signals are connected: the one chosen.
         self._bound = None
+        #: Whether going out of reach with the drive enabled has been said, so
+        #: it is said once rather than with every state change after.
+        self._gone_said = False
         #: The node's NMT state, from its heartbeat: None when it sends none.
         self.nmt = QLabel("")
         self._nmt_state: str | None = None
@@ -493,7 +505,7 @@ class MotorView(QWidget):
 
         # --- the whole thing ----------------------------------------------------------
         where = QHBoxLayout()
-        where.addWidget(QLabel("Node:"))
+        where.addWidget(QLabel("Drive:"))
         where.addWidget(self.node)
         where.addWidget(self.nmt)
         where.addWidget(self.pre_op_btn)
@@ -579,10 +591,20 @@ class MotorView(QWidget):
         if self._bound is not None:
             self._bound.state_changed.disconnect(self._show_nmt)
             self._bound.changed.disconnect(self._on_device_changed)
+            self._bound.leaving.disconnect(self._on_leaving)
         self._bound = device
+        self._gone_said = False
         if device is not None:
             device.state_changed.connect(self._show_nmt)
             device.changed.connect(self._on_device_changed)
+            device.leaving.connect(self._on_leaving)
+
+    def _on_leaving(self) -> None:
+        """The device is about to go out of reach on purpose, and can still be
+        written to: an EtherCAT ring about to be scanned or stopped. The
+        demand goes now, as when the pane closes -- there and then, since the
+        device is gone once this returns."""
+        self.stop_demand(background=False, why=LEAVING)
 
     def _on_device_changed(self) -> None:
         """An EDS loaded, or the mapping changed: what is offered, and what is
@@ -599,7 +621,7 @@ class MotorView(QWidget):
         """Put the chosen device in a state; its heartbeat says what came of it."""
         device = self._device()
         if device is None:
-            self.app.warn("No drive selected, or it is not on the bus.")
+            self.app.warn("No drive selected, or it cannot be reached.")
             return
         if command == "OPERATIONAL" and not self.app.confirm.ask(
             self, f"cia402.start.{device.key}", START_TITLE, START_TEXT.format(node=device.label)
@@ -643,6 +665,7 @@ class MotorView(QWidget):
         device = self._device()
         state, lost = (None, False) if device is None else device.state()
         self._nmt_state = state
+        self._check_reach(device)
         # Only a device that has the two states has the buttons for them.
         has_states = device is None or {"PRE-OPERATIONAL", "OPERATIONAL"} <= set(device.states)
         for button in (self.pre_op_btn, self.start_btn):
@@ -872,14 +895,14 @@ class MotorView(QWidget):
     def _drive(self) -> DeviceDrive | None:
         device = self._device()
         if device is None or not device.available():
-            self.app.warn("No drive selected, or it is not on the bus.")
+            self.app.warn("No drive selected, or it cannot be reached.")
             return None
         return DeviceDrive(device)
 
     # --- reading it ------------------------------------------------------------------------
     def _set_polling(self, on: bool) -> None:
         if on and self.node.currentData() is None:
-            self.app.warn("No drive selected, or it is not on the bus.")
+            self.app.warn("No drive selected, or it cannot be reached.")
             self.poll.setChecked(False)
             return
         if on:
@@ -1114,7 +1137,7 @@ class MotorView(QWidget):
         """The one command with a question in front of it."""
         device = self._device()
         if device is None:
-            self.app.warn("No drive selected, or it is not on the bus.")
+            self.app.warn("No drive selected, or it cannot be reached.")
             return
         agreed = self.app.confirm.ask(
             self,
@@ -1310,7 +1333,7 @@ class MotorView(QWidget):
             return  # not driving anything, as far as anything here knows
         drive = self._quietly()
         if drive is None:
-            self.app.error(COULD_NOT_STOP.format(node=node, why="it is no longer on the bus"))
+            self.app.error(COULD_NOT_STOP.format(node=node, why="it can no longer be reached"))
             return
 
         held = self._maker_bits()
@@ -1340,6 +1363,19 @@ class MotorView(QWidget):
         else:
             done(None, None)
 
+    def _check_reach(self, device) -> None:
+        """Say so, once, if the device went out of reach with the drive enabled.
+
+        A device that said ``leaving`` first has had its demand taken away
+        already, so it only comes to this if that stop failed. A CAN bus
+        closing is said by ``_on_bus_lost``.
+        """
+        if device is None or device.available():
+            self._gone_said = False
+        elif cia402.is_enabled(self.statusword) and not self._gone_said:
+            self._gone_said = True
+            self.app.error(GONE.format(node=device.label))
+
     def _on_bus_lost(self) -> None:
         """Say the thing that cannot be done anything about.
 
@@ -1347,7 +1383,8 @@ class MotorView(QWidget):
         honest response is to state it: the drive is still doing what it was
         told, and nothing in this window can reach it now.
         """
-        if cia402.is_enabled(self.statusword):
+        if cia402.is_enabled(self.statusword) and not self._gone_said:
+            self._gone_said = True
             self.app.error(BUS_GONE.format(node=self._label()))
         if self.poller.running:
             self.poll.setChecked(False)
@@ -1363,7 +1400,7 @@ def register(app) -> None:
     """
     app.add_pane(
         "main",
-        "CANopen motor control",
+        TITLE,
         lambda _name: MotorView(app),
         area="right",
         shutdown=lambda view: view.stop_demand(background=False),
