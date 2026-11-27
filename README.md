@@ -58,6 +58,16 @@ folder (*Plugins > Open plugins folder*) and use *Plugins > Reload plugins*.
 3. Commit both, and push a tag `v<VERSION>`. CI tests it and makes a GitHub release with
    the zip, which is the file `plugins.json` points to.
 
+## Safety notice
+
+This plugin enables drives and sets motors moving. pycangui's
+[safety notice](https://github.com/davhodg/pycangui#safety-notice) applies: know what the drive
+and the machine will do before you enable it, and keep a way to stop them within reach. The halt
+the plugin sends when its pane goes away is not a safeguard.
+
+If you find the plugin doing something unsafe -- writing to a drive without being asked, or not
+stopping what it says it stopped -- open an issue.
+
 ## Licence
 
 Apache-2.0, as pycangui: see [LICENSE](LICENSE).

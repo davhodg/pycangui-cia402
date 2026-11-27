@@ -16,11 +16,6 @@ fix and the advisory published together.
 
 The latest release and `master`.
 
-## What is and is not a vulnerability
+## What to report
 
-A plugin is code that pycangui runs, and this one drives motors. A drive that moves when
-it is enabled is doing what it was asked; what it does is the drive's and its setup's.
-
-What **is** worth reporting: the plugin writing to a drive that nobody asked it to -- an
-enable without the question it asks first, a demand sent when its pane is put away or
-pycangui closes, or a halt it says it sent and did not.
+As for pycangui.
