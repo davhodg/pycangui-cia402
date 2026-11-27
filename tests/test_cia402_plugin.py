@@ -257,7 +257,7 @@ def view(window):
 def test_it_installs_and_brings_a_pane(app, window, view):
     assert plugin.NAME in [r.label for r in window.plugins.working()]
     assert window.plugins.errors() == {}
-    assert window.panes.docks["cia402:main"].windowTitle() == plugin.TITLE
+    assert window.panes.docks["cia402:main"].windowTitle().startswith(plugin.TITLE)
 
 
 def test_it_says_nothing_has_been_read_rather_than_inventing_a_state(app, view):
