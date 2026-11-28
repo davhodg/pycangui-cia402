@@ -54,7 +54,10 @@ NAME = "Motor control (CiA 402)"
 #: The pane's title: a CANopen node or a drive another plugin provides.
 TITLE = "Motor control"
 VERSION = "2.3"
-DESCRIPTION = "Drive state machine, modes and targets by CiA 402."
+DESCRIPTION = (
+    "Drives a CiA 402 motor controller over CANopen or EtherCAT: its state, mode and target, "
+    "and what it is doing."
+)
 
 ENABLE_TITLE = "Enable the drive?"
 ENABLE_TEXT = (
