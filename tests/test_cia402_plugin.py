@@ -590,9 +590,13 @@ def test_the_speed_limits_are_two_different_objects_in_two_units(app):
 # --- the demand, and why it faulted -------------------------------------------------------
 def test_each_mode_polls_its_own_demand():
     """Beside the actual value, the demand says whether the drive took its target."""
-    demands = {mode: cia402.watched(mode)[-1].index for mode in (1, 2, 3, 4)}
-    assert demands == {1: 0x6062, 2: 0x6043, 3: 0x606B, 4: 0x6074}
-    assert cia402.watched(6) == cia402.WATCHED, "homing has none"
+    demands = {
+        mode: {obj.index for obj in cia402.watched(mode)} & {0x6062, 0x6043, 0x606B, 0x6074}
+        for mode in (1, 2, 3, 4, 6)
+    }
+    assert demands == {1: {0x6062}, 2: {0x6043}, 3: {0x606B}, 4: {0x6074}, 6: set()}, (
+        "homing has none"
+    )
 
 
 def test_the_demand_row_follows_the_mode(app, view):
@@ -864,6 +868,81 @@ def test_a_setting_the_eds_does_not_have_is_greyed_and_not_read(app, view, monke
     view.settings_tab.read_all()
     assert not field(view, cia402.HOMING_METHOD).widget.isEnabled()
     assert cia402.HOMING_METHOD.where not in asked
+
+
+# --- homing, profile position's options, and the inputs ------------------------------------
+def test_go_sends_profile_positions_options_with_the_edge():
+    relative = cia402.steps_to_apply_target(1, ENABLED, cia402.RELATIVE)
+    assert words(relative) == [0x4F, 0x5F, 0x4F]
+    both = cia402.steps_to_apply_target(1, ENABLED, cia402.RELATIVE | cia402.CHANGE_IMMEDIATELY)
+    assert words(both) == [0x6F, 0x7F, 0x6F]
+    assert words(cia402.steps_to_apply_target(1, ENABLED, cia402.HALT)) == [0x0F, 0x1F, 0x0F], (
+        "only the two options"
+    )
+
+
+def test_homing_starts_on_the_edge_and_leaves_bit_4_set():
+    """Clearing bit 4 in homing mode stops homing, so Start homing does not."""
+    assert words(cia402.steps_to_home(6, ENABLED)) == [0x0F, 0x1F]
+    with pytest.raises(ValueError):
+        cia402.steps_to_home(6, SWITCHED_ON)  # would enable the drive without asking
+    with pytest.raises(ValueError):
+        cia402.steps_to_home(1, ENABLED)
+
+
+def test_homing_status_is_read_from_bits_13_12_and_10():
+    said = {
+        bits: cia402.homing_status(ENABLED | (bits[0] << 13) | (bits[1] << 12) | (bits[2] << 10))
+        for bits in cia402.HOMING_STATUS
+    }
+    assert said == {
+        bits: cia402.HOMING_STATUS[tuple(bool(b) for b in bits)] for bits in cia402.HOMING_STATUS
+    }
+    assert len(set(said.values())) == 6, "each a different answer"
+    assert cia402.homing_status(ENABLED | (3 << 12)) not in said.values(), "not in the table"
+
+
+def test_bits_12_and_13_are_named_by_the_mode():
+    word = ENABLED | (1 << 12)
+    assert len(cia402.flags_of(word, 1)) == len(cia402.flags_of(word)) + 1
+    assert cia402.flags_of(word, 4) == cia402.flags_of(word), "profile torque defines neither"
+
+
+def test_the_inputs_are_named_by_the_standard_and_the_makers_by_number():
+    names = dict(cia402.INPUT_BITS)
+    assert cia402.inputs_of(0b0101) == [names[0], names[2]]
+    assert cia402.inputs_of(0) == []
+    assert len(cia402.inputs_of((1 << 16) | (1 << 20))) == 1, "the maker's on one line"
+
+
+def test_start_homing_from_the_pane(app, view, monkeypatch):
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.mode = 6
+    view._took(cia402.MODE_DISPLAY, 6)
+    view._took(cia402.STATUSWORD, ENABLED)
+    assert view.apply_target.isEnabled()
+    assert view.go_options.isHidden(), "profile position's options are not homing's"
+    view.apply_target.click()
+    assert controlwords(drive) == [0x0F, 0x1F]
+
+
+def test_go_from_the_pane_with_relative_ticked(app, view, monkeypatch):
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.mode = 1
+    view._took(cia402.MODE_DISPLAY, 1)
+    view._took(cia402.STATUSWORD, ENABLED)
+    assert not view.go_options.isHidden()
+    view.relative.setChecked(True)
+    view.apply_target.click()
+    assert controlwords(drive) == [0x4F, 0x5F, 0x4F]
+
+
+def test_the_inputs_are_polled_and_shown(app, view):
+    assert cia402.DIGITAL_INPUTS.where in {obj.where for obj in cia402.watched(3)}
+    view._took(cia402.DIGITAL_INPUTS, 0b0100)
+    assert view.inputs.text() == ", ".join(cia402.inputs_of(0b0100))
+    view._forget()
+    assert view.inputs.text() == "--"
 
 
 # --- only what this drive has ------------------------------------------------------------

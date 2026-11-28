@@ -194,6 +194,24 @@ def maker_bits(bits) -> str:
 
 #: Beside Go in a mode that acts on its target as soon as it is written.
 GO_ELSEWHERE = "(Profile position only)"
+GO_TIP = (
+    "Profile position only: the drive takes the target on the rising\n"
+    "edge of bit 4 and ignores it until then."
+)
+HOME_TIP = (
+    "Homing: starts on the rising edge of bit 4, by the method and speeds\n"
+    "on the Settings tab. Quick stop, Disable, or this pane going, stop it."
+)
+HOMING_NOTE = "Set up on the Settings tab: method, speeds, acceleration and offset."
+RELATIVE_TIP = "Bit 6, sent with Go: the target is a distance from where the drive is, not a place."
+IMMEDIATELY_TIP = (
+    "Bit 5, sent with Go: the drive takes the new target at once, rather\n"
+    "than after the move it is making."
+)
+INPUTS_TIP = (
+    "0x60FD sub 0: the drive's inputs, read with the rest -- its limit and\n"
+    "home switches and interlock by name, the maker's (bits 16 to 31) by number."
+)
 
 #: Beside the node: its NMT state, which is not the drive's CiA 402 state.
 NMT_TIP = (
@@ -399,13 +417,20 @@ class MotorView(QWidget):
         self.set_target = self.app.with_icon(QPushButton("Set target"), "pick")
         self.set_target.clicked.connect(self._write_target)
         self.apply_target = self.app.with_icon(QPushButton("Go"), "start")
-        self.apply_target.setToolTip(
-            "Profile position only: the drive takes the target on the rising\n"
-            "edge of bit 4 and ignores it until then."
-        )
-        self.apply_target.clicked.connect(
-            lambda: self._command(lambda: cia402.steps_to_apply_target(self.mode, self.statusword))
-        )
+        self.apply_target.setToolTip(GO_TIP)
+        self.apply_target.clicked.connect(self._apply_target)
+        #: Profile position's options, sent with Go's edge.
+        self.relative = QCheckBox("Relative")
+        self.relative.setToolTip(RELATIVE_TIP)
+        self.immediately = QCheckBox("Change immediately")
+        self.immediately.setToolTip(IMMEDIATELY_TIP)
+        go_options = QHBoxLayout()
+        go_options.setContentsMargins(0, 0, 0, 0)
+        go_options.addWidget(self.relative)
+        go_options.addWidget(self.immediately)
+        go_options.addStretch()
+        self.go_options = QWidget()
+        self.go_options.setLayout(go_options)
         #: Beside Go, in a mode that moves as soon as its target is written:
         #: a greyed button alone left people looking for what it was for.
         self.go_note = QLabel("")
@@ -435,6 +460,7 @@ class MotorView(QWidget):
         settings.addWidget(self.set_target, 1, 2)
         settings.addWidget(self.apply_target, 1, 3)
         settings.addWidget(self.go_note, 1, 4)
+        settings.addWidget(self.go_options, 2, 1, 1, 4)
         settings.setColumnStretch(5, 1)
 
         # --- what it is doing -----------------------------------------------------------
@@ -469,6 +495,14 @@ class MotorView(QWidget):
         self._demand_row = demand
         for column, widget in enumerate(demand):
             watched.addWidget(widget, 3, column)
+        #: The drive's inputs: limit and home switches, read with the rest.
+        self.inputs = QLabel("--")
+        self.inputs.setWordWrap(True)
+        inputs_name = QLabel("Inputs:")
+        for widget in (inputs_name, self.inputs):
+            widget.setToolTip(INPUTS_TIP)
+        watched.addWidget(inputs_name, 4, 0)
+        watched.addWidget(self.inputs, 4, 1, 1, 3)
         watched.setColumnStretch(3, 1)
 
         self.banner = QLabel("")
@@ -484,7 +518,7 @@ class MotorView(QWidget):
         self.poll = QCheckBox("Poll")
         self.poll.setToolTip(
             "Read these, over and over:\n"
-            + "\n".join(f"    {about(obj)}" for obj in cia402.WATCHED)
+            + "\n".join(f"    {about(obj)}" for obj in (*cia402.WATCHED, cia402.DIGITAL_INPUTS))
             + "\nand the demand of the mode the drive is in."
         )
         self.poll.toggled.connect(self._set_polling)
@@ -731,6 +765,7 @@ class MotorView(QWidget):
         self.mode_now.setText("")
         for value in self.actuals.values():
             value.setText("--")
+        self.inputs.setText("--")
         self._show_velocity_row()
         self._show_demand_row()
         self._show_nmt()
@@ -773,6 +808,10 @@ class MotorView(QWidget):
                 label.setText("not in the EDS")
             elif label.text() == "not in the EDS":
                 label.setText("--")  # a different drive, or an EDS since loaded
+        if not self._has(cia402.DIGITAL_INPUTS):
+            self.inputs.setText("not in the EDS")
+        elif self.inputs.text() == "not in the EDS":
+            self.inputs.setText("--")
         self._show_units()
         self._read_supported_modes()
         self._read_units()
@@ -1000,6 +1039,9 @@ class MotorView(QWidget):
             if was != self.mode:
                 self._show_demand_row()
                 self._show_rpdo_conflicts()  # the target it writes changed
+        elif obj.where == cia402.DIGITAL_INPUTS.where:
+            active = cia402.inputs_of(int(value))
+            self.inputs.setText(", ".join(active) if active else "none active")
         elif obj.where == cia402.VL_VELOCITY_ACTUAL.where:
             self._velocity_row[1].setText(f"{int(value):,}")
         elif (demand := cia402.DEMAND_FOR.get(self.mode)) is not None and obj.where == demand.where:
@@ -1095,7 +1137,7 @@ class MotorView(QWidget):
             return
         state = cia402.state_of(self.statusword)
         self.state.setText(state)
-        flags = cia402.flags_of(self.statusword)
+        flags = cia402.flags_of(self.statusword, self.mode)
         self.flags.setText(", ".join(flags) if flags else "no flags set")
         self.raw.setText(f"Statusword 0x{self.statusword:04X}")
         maker = cia402.bits_set(self.statusword)
@@ -1129,11 +1171,18 @@ class MotorView(QWidget):
         obj = cia402.TARGET_FOR.get(self.mode)
         self.target.setEnabled(allowed)
         self.set_target.setEnabled(allowed)
-        # Only in profile position, and only while the drive is enabled:
-        # making the edge writes the enable controlword, so from anywhere
-        # else this button would enable the drive without asking.
-        self.apply_target.setEnabled(self.mode == 1 and cia402.is_enabled(self.statusword))
-        if allowed and obj is not None:
+        # Only in profile position or homing, and only while the drive is
+        # enabled: making the edge writes the enable controlword, so from
+        # anywhere else this button would enable the drive without asking.
+        homing = self.mode == 6
+        self.apply_target.setText("Start homing" if homing else "Go")
+        self.apply_target.setToolTip(HOME_TIP if homing else GO_TIP)
+        self.apply_target.setEnabled(self.mode in (1, 6) and cia402.is_enabled(self.statusword))
+        self.go_options.setVisible(self.mode == 1)
+        if homing:
+            said = cia402.homing_status(self.statusword) if self._read_something else ""
+            self.target_note.setText(f"{said}. {HOMING_NOTE}" if said else HOMING_NOTE)
+        elif allowed and obj is not None:
             self.target_note.setText(f"{obj.name} (0x{obj.index:04X}), in {self._unit(obj)}.")
         else:
             self.target_note.setText(why)
@@ -1141,6 +1190,17 @@ class MotorView(QWidget):
         self.go_note.setText(GO_ELSEWHERE if acts_at_once else "")
 
     # --- doing something to it -----------------------------------------------------------------
+    def _apply_target(self) -> None:
+        """Go in profile position, with its options; Start homing in homing."""
+        mode = self.mode
+        if mode == 6:
+            self._command(lambda: cia402.steps_to_home(mode, self.statusword))
+            return
+        options = (cia402.RELATIVE if self.relative.isChecked() else 0) | (
+            cia402.CHANGE_IMMEDIATELY if self.immediately.isChecked() else 0
+        )
+        self._command(lambda: cia402.steps_to_apply_target(mode, self.statusword, options))
+
     def _enable(self) -> None:
         """The one command with a question in front of it."""
         device = self._device()

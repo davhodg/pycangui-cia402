@@ -348,7 +348,7 @@ def watched(mode: int) -> tuple[Object, ...]:
             VL_VELOCITY_ACTUAL if obj.where == VELOCITY_ACTUAL.where else obj for obj in WATCHED
         )
     demand = DEMAND_FOR.get(mode)
-    return objects + ((demand,) if demand is not None else ())
+    return objects + ((demand,) if demand is not None else ()) + (DIGITAL_INPUTS,)
 
 
 #: Written rather than watched: read once when a drive is chosen, and
@@ -457,6 +457,14 @@ FAULT_RESET = 0x0080
 #: Bit 4 in profile position mode: the drive takes the target it has been given
 #: on the rising edge of this and not before.
 NEW_SETPOINT = 0x0010
+#: Bits 5 and 6 in profile position mode, sent with the edge: take the new
+#: target at once rather than after the move under way, and take it as a
+#: distance from where the drive is rather than as a place.
+CHANGE_IMMEDIATELY = 0x0020
+RELATIVE = 0x0040
+#: Bit 4 in homing mode: homing starts on its rising edge, and stops if it
+#: is cleared before homing is done.
+HOMING_START = 0x0010
 
 #: Bits 4, 5 and 6 in velocity mode: enable the ramp, unlock it, and use the
 #: reference. Each is a brake on the speed when clear -- the ramp output held
@@ -513,6 +521,53 @@ MANUFACTURER_STATUS_BITS = (8, 14, 15)
 MANUFACTURER_CONTROL_BITS = (11, 12, 13, 14, 15)
 
 
+#: Statusword bits 12 and 13, which each mode defines for itself.
+MODE_FLAGS = {
+    1: ((1 << 12, "Set-point acknowledged"), (1 << 13, "Following error")),
+    3: ((1 << 12, "Speed zero"), (1 << 13, "Max slippage error")),
+    6: ((1 << 12, "Homing attained"), (1 << 13, "Homing error")),
+    8: ((1 << 12, "Following the command"), (1 << 13, "Following error")),
+    9: ((1 << 12, "Following the command"),),
+    10: ((1 << 12, "Following the command"),),
+}
+
+#: What homing is doing, from statusword bits 13, 12 and 10 (error,
+#: attained, target reached), as CiA 402 tabulates them.
+HOMING_STATUS = {
+    (False, False, False): "Homing in progress",
+    (False, False, True): "Homing interrupted, or not started",
+    (False, True, False): "Homed, but not at the target yet",
+    (False, True, True): "Homing done",
+    (True, False, False): "Homing error, still moving",
+    (True, False, True): "Homing error, stopped",
+}
+
+
+def homing_status(statusword: int) -> str:
+    """What homing is doing, in words."""
+    key = (bool(statusword & (1 << 13)), bool(statusword & (1 << 12)), bool(statusword & (1 << 10)))
+    return HOMING_STATUS.get(key, "Homing: the statusword says something CiA 402 does not")
+
+
+#: The drive's own inputs, bit by bit; bits 16 to 31 are the maker's.
+DIGITAL_INPUTS = Object(0x60FD, 0, "Digital inputs", "<I")
+INPUT_BITS = (
+    (0, "Negative limit switch"),
+    (1, "Positive limit switch"),
+    (2, "Home switch"),
+    (3, "Interlock"),
+)
+
+
+def inputs_of(value: int) -> list[str]:
+    """Which inputs are active, the standard's by name and the maker's by number."""
+    named = [name for bit, name in INPUT_BITS if value & (1 << bit)]
+    maker = [bit for bit in range(16, 32) if value & (1 << bit)]
+    if maker:
+        named.append(f"maker input{'s' if len(maker) > 1 else ''} {', '.join(map(str, maker))}")
+    return named
+
+
 def bits_set(word: int, bits=MANUFACTURER_STATUS_BITS) -> list[int]:
     """Which of ``bits`` are set in ``word``, lowest first."""
     return [bit for bit in sorted(bits) if word & (1 << bit)]
@@ -539,9 +594,12 @@ def state_of(statusword: int) -> str:
     return UNKNOWN
 
 
-def flags_of(statusword: int) -> list[str]:
-    """The bits beside the state that are set, in the order the standard has them."""
-    return [name for bit, name in FLAGS if statusword & bit]
+def flags_of(statusword: int, mode: int = 0) -> list[str]:
+    """The bits beside the state that are set, in the order the standard has
+    them, and bits 12 and 13 as the mode the drive is in names them."""
+    flags = FLAGS[:3] + MODE_FLAGS.get(mode, ()) + FLAGS[3:]
+    flags = tuple(sorted(flags, key=lambda flag: flag[0]))
+    return [name for bit, name in flags if statusword & bit]
 
 
 def is_faulted(statusword: int) -> bool:
@@ -654,7 +712,7 @@ def steps_to_quick_stop(statusword: int) -> list[Step]:
     return [Step("Quick stop", QUICK_STOP)]
 
 
-def steps_to_apply_target(mode: int, statusword: int) -> list[Step]:
+def steps_to_apply_target(mode: int, statusword: int, options: int = 0) -> list[Step]:
     """Make a profile position drive act on the target it has been given.
 
     Profile position is the mode where writing the target is not enough: the
@@ -680,10 +738,35 @@ def steps_to_apply_target(mode: int, statusword: int) -> list[Step]:
             f"{state_of(statusword)}. Applying one is the enable controlword with bit 4 "
             "added, so doing it from here would enable the drive without asking."
         )
+    # The options go in all three: the drive reads them at the edge, and a
+    # word without them either side would be a change of its own.
+    options &= RELATIVE | CHANGE_IMMEDIATELY
+    return [
+        Step("Clearing bit 4 to make an edge", ENABLE_OPERATION | options),
+        Step("Applying the target", ENABLE_OPERATION | NEW_SETPOINT | options),
+        Step("Clearing bit 4 again", ENABLE_OPERATION | options),
+    ]
+
+
+def steps_to_home(mode: int, statusword: int) -> list[Step]:
+    """Start homing: the rising edge of bit 4, left set.
+
+    Not cleared again as Go clears it: in homing mode clearing bit 4 stops
+    homing part way. The next controlword this pane writes -- a command, or
+    the halt when it goes away -- clears it, which is a stop as well. Only
+    from Operation enabled, for the reason Go is.
+    """
+    if mode != 6:
+        raise ValueError(f"Homing starts in homing mode, and the drive is in {mode_name(mode)}.")
+    if not is_enabled(statusword):
+        raise ValueError(
+            f"The drive has to be enabled before it will home, and this is "
+            f"{state_of(statusword)}. Starting homing is the enable controlword with bit 4 "
+            "added, so doing it from here would enable the drive without asking."
+        )
     return [
         Step("Clearing bit 4 to make an edge", ENABLE_OPERATION),
-        Step("Applying the target", ENABLE_OPERATION | NEW_SETPOINT),
-        Step("Clearing bit 4 again", ENABLE_OPERATION),
+        Step("Starting homing", ENABLE_OPERATION | HOMING_START),
     ]
 
 
