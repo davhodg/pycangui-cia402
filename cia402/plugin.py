@@ -114,10 +114,20 @@ GONE = (
 #: drive was set up in, which only the drive can say.
 UNITS_NOTE = (
     "Position and velocity are in the drive's own units, as 0x60A8 and 0x60A9 "
-    "say when it has them, and torque in per mille of rated. Nothing is "
-    "converted: that needs the gearing and the motor rating, which are the "
-    "drive's business and not pycangui's. Velocity mode's own objects are in rpm."
+    "say when it has them, and torque in per mille of rated. The two speed "
+    "limits are also shown in each other's unit where the drive says how to "
+    "convert; nothing else is, since that needs the gearing and the motor "
+    "rating, which are the drive's business. Velocity mode's own objects are in rpm."
 )
+
+
+#: The two limits on speed, in two units: shown each in the other's as well.
+SPEED_LIMITS = (cia402.MAX_PROFILE_VELOCITY, cia402.MAX_MOTOR_SPEED)
+
+
+def amount(value: float) -> str:
+    """A converted value: whole above a hundred, three figures below."""
+    return f"{value:,.0f}" if abs(value) >= 100 else f"{value:,.3g}"
 
 
 def about(obj: Object, unit: str | None = None) -> str:
@@ -271,6 +281,10 @@ class MotorView(QWidget):
         #: The drive's own units, "position" and "velocity", from 0x60A8 and
         #: 0x60A9: empty until read, or when it has neither.
         self._units: dict[str, str] = {}
+        #: What 0x60A9 said, as a number, and what of 0x608F and 0x6096 was
+        #: read: what the two speed limits are put in one unit with.
+        self._si_velocity: int | None = None
+        self._scaling: dict[tuple[int, int], int] = {}
         #: Each unit on screen, with the object it is the unit of and the
         #: widgets that say which object in their tooltip.
         self._unit_labels: list[tuple[Object, QLabel, tuple]] = []
@@ -414,6 +428,9 @@ class MotorView(QWidget):
         # their own, one to a line: three limits along a single row read as
         # one setting, and they are three separate promises about a machine.
         self.limits: dict[tuple[int, int], QSpinBox] = {}
+        #: Each speed limit in the other's unit, where the drive says enough
+        #: to work it out: see _show_speed_limits.
+        self.limit_in_other: dict[tuple[int, int], QLabel] = {}
         limits_grid = QGridLayout()
         for row, obj in enumerate(cia402.LIMITS):
             box = QSpinBox()
@@ -428,7 +445,13 @@ class MotorView(QWidget):
             limits_grid.addWidget(name, row, 0)
             limits_grid.addWidget(box, row, 1)
             limits_grid.addWidget(unit, row, 2)
-        limits_grid.setColumnStretch(3, 1)
+            if obj in SPEED_LIMITS:
+                other = QLabel("")
+                other.setEnabled(False)
+                self.limit_in_other[obj.where] = other
+                box.valueChanged.connect(lambda _v: self._show_speed_limits())
+                limits_grid.addWidget(other, row, 3)
+        limits_grid.setColumnStretch(4, 1)
 
         self.read_limits_btn = self.app.with_icon(QPushButton("Read limits"), "read")
         self.read_limits_btn.setToolTip("Read all three from the drive.")
@@ -732,6 +755,8 @@ class MotorView(QWidget):
         self._asked_why = False
         self._complained.clear()  # another drive's refusals are not this one's
         self._units.clear()  # nor its units
+        self._si_velocity = None
+        self._scaling.clear()
         self.mode_now.setText("")
         for value in self.actuals.values():
             value.setText("--")
@@ -809,11 +834,23 @@ class MotorView(QWidget):
             def done(value, error, measures=measures) -> None:
                 if error:
                     return  # an older drive without it: the plain label stands
+                if measures == "velocity":
+                    self._si_velocity = int(value)
                 if (unit := cia402.si_unit(int(value))) is not None:
                     self._units[measures] = unit
-                    self._show_units()
+                self._show_units()
 
             self._background(lambda o=obj: drive.read(o), done)
+        for obj in cia402.SCALING:
+            if not self._has(obj):
+                continue
+
+            def scaled(value, error, obj=obj) -> None:
+                if not error:  # a drive without it: the limits are not converted
+                    self._scaling[obj.where] = int(value)
+                    self._show_speed_limits()
+
+            self._background(lambda o=obj: drive.read(o), scaled)
 
     def _show_units(self) -> None:
         for obj, label, widgets in self._unit_labels:
@@ -823,6 +860,31 @@ class MotorView(QWidget):
         self._show_velocity_row()
         self._show_demand_row()
         self._show_target()
+        self._show_speed_limits()
+
+    def _show_speed_limits(self) -> None:
+        """Each speed limit in the other's unit too, so they can be compared.
+
+        0x607F is in the drive's velocity units and 0x6080 in rpm. Shown only
+        where the drive says enough to convert -- 0x60A9, or the encoder
+        resolution and velocity factor -- and not at all where its velocity
+        units are rpm already.
+        """
+        scale = cia402.rpm_per_velocity_unit(self._si_velocity, self._scaling)
+        unit = self._unit(cia402.MAX_PROFILE_VELOCITY)
+        profile = self.limit_in_other[cia402.MAX_PROFILE_VELOCITY.where]
+        motor = self.limit_in_other[cia402.MAX_MOTOR_SPEED.where]
+        if not scale or unit == "rpm":
+            profile.setText("")
+            motor.setText("")
+            return
+        profile_value = self.limits[cia402.MAX_PROFILE_VELOCITY.where].value()
+        motor_value = self.limits[cia402.MAX_MOTOR_SPEED.where].value()
+        profile.setText(f"= {amount(profile_value * scale)} rpm")
+        motor.setText(f"= {amount(motor_value / scale)} {unit}")
+        source = "0x60A9" if self._si_velocity else "0x608F and 0x6096"
+        for label in (profile, motor):
+            label.setToolTip(f"Worked out from {source}.")
 
     def _read_supported_modes(self) -> None:
         """Ask 0x6502 which modes this drive has, and offer only those."""

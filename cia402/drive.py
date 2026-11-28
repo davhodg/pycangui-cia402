@@ -31,6 +31,7 @@ write objects, which is what makes all of it testable without either.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 
@@ -163,6 +164,60 @@ def si_unit(value: int) -> str | None:
     elif per:
         name = f"{name}/{SI_CODES.get(per, f'0x{per:02X}')}"
     return name if power == 0 else f"{10.0**power:g} {name}"
+
+
+#: What it takes to put the two speed limits in one unit, where SI_UNIT_VELOCITY
+#: does not say rpm: how many increments of the position encoder make how many
+#: motor revolutions, and the velocity factor from the drive's velocity units to
+#: increments per second. Each is a numerator and a divisor.
+ENCODER_INCREMENTS = Object(0x608F, 1, "Encoder increments", "<I")
+MOTOR_REVOLUTIONS = Object(0x608F, 2, "Motor revolutions", "<I")
+VELOCITY_FACTOR_NUMERATOR = Object(0x6096, 1, "Velocity factor numerator", "<I")
+VELOCITY_FACTOR_DIVISOR = Object(0x6096, 2, "Velocity factor divisor", "<I")
+#: Read once, when a drive is chosen, beside 0x60A8 and 0x60A9.
+SCALING = (
+    ENCODER_INCREMENTS,
+    MOTOR_REVOLUTIONS,
+    VELOCITY_FACTOR_NUMERATOR,
+    VELOCITY_FACTOR_DIVISOR,
+)
+
+
+def rpm_per_velocity_unit(si_velocity: int | None, scaling: dict) -> float | None:
+    """How many rpm one of the drive's velocity units is; None where it cannot be said.
+
+    0x607F is in the drive's velocity units and 0x6080 in rpm, so comparing
+    the two needs this. From 0x60A9 where it names revolutions or radians
+    against time. Where it names increments per second, or says nothing --
+    and a drive with no factor group counts in increments -- from the encoder
+    resolution (0x608F), through the velocity factor (0x6096) where the drive
+    has one and 0x60A9 does not already say increments. ``scaling`` is
+    whatever of SCALING was read, by ``where``; a zero, or a part missing,
+    means no answer rather than a guess.
+    """
+    per_second = {0x03: 60.0, 0x47: 1.0}  # to "per minute"
+    if si_velocity:
+        value = int(si_velocity) & 0xFFFF_FFFF
+        power = 10.0 ** struct.unpack("<b", bytes([value >> 24]))[0]
+        unit, per = (value >> 16) & 0xFF, (value >> 8) & 0xFF
+        if per not in per_second:
+            return None
+        if unit == 0xB4:  # revolutions
+            return power * per_second[per]
+        if unit == 0x10:  # radians
+            return power * per_second[per] / (2 * math.pi)
+        if unit != 0xB5:  # increments, worked out below; anything else is not a speed of the motor
+            return None
+        to_increments_per_s = power * per_second[per] / 60.0
+    else:
+        numerator = scaling.get(VELOCITY_FACTOR_NUMERATOR.where)
+        divisor = scaling.get(VELOCITY_FACTOR_DIVISOR.where)
+        to_increments_per_s = numerator / divisor if numerator and divisor else 1.0
+    increments = scaling.get(ENCODER_INCREMENTS.where)
+    revolutions = scaling.get(MOTOR_REVOLUTIONS.where)
+    if not increments or not revolutions:
+        return None
+    return to_increments_per_s * 60.0 * revolutions / increments
 
 
 #: Which modes this drive has, as a bit per mode. Bit 0 is profile position,

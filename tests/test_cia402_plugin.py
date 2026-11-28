@@ -679,6 +679,53 @@ def test_a_drive_without_the_si_unit_objects_claims_no_unit(app, view, monkeypat
     assert view._velocity_row[2].text() == cia402.VELOCITY_UNITS
 
 
+def test_the_speed_limits_are_worked_out_in_one_unit():
+    rpm = cia402.rpm_per_velocity_unit
+    encoder = {cia402.ENCODER_INCREMENTS.where: 4096, cia402.MOTOR_REVOLUTIONS.where: 1}
+    factor = {cia402.VELOCITY_FACTOR_NUMERATOR.where: 10, cia402.VELOCITY_FACTOR_DIVISOR.where: 1}
+    assert rpm(0x00B44700, {}) == 1.0, "rpm already"
+    assert rpm(0xFFB44700, {}) == pytest.approx(0.1), "tenths of an rpm"
+    assert rpm(0x00B40300, {}) == 60.0, "rev/s"
+    assert rpm(0x00100300, {}) == pytest.approx(60 / (2 * 3.141592653589793)), "rad/s"
+    assert rpm(0x00B50300, encoder) == pytest.approx(60 / 4096), "inc/s, by the encoder"
+    assert rpm(0x00B50300, {**encoder, **factor}) == pytest.approx(60 / 4096), "inc/s already"
+    assert rpm(None, encoder) == pytest.approx(60 / 4096), "no factor group: increments"
+    assert rpm(None, {**encoder, **factor}) == pytest.approx(600 / 4096), "by the factor"
+    assert rpm(0x00B50300, {}) is None, "increments with no encoder resolution"
+    assert rpm(None, {cia402.ENCODER_INCREMENTS.where: 4096}) is None, "half of it"
+    assert rpm(0x00010300, encoder) is None, "m/s is not a speed of the motor"
+
+
+def speed_limits(view) -> tuple[str, str]:
+    return tuple(view.limit_in_other[obj.where].text() for obj in plugin.SPEED_LIMITS)
+
+
+def test_each_speed_limit_is_shown_in_the_others_unit(app, view, monkeypatch):
+    """0x607F in counts per second and 0x6080 in rpm could not be compared."""
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.units = {cia402.ENCODER_INCREMENTS.where: 4096, cia402.MOTOR_REVOLUTIONS.where: 1}
+    view._fit_to_drive()
+    view.limits[cia402.MAX_PROFILE_VELOCITY.where].setValue(204_800)
+    view.limits[cia402.MAX_MOTOR_SPEED.where].setValue(3000)
+    assert speed_limits(view) == ("= 3,000 rpm", f"= 204,800 {cia402.VELOCITY_UNITS}")
+
+    drive.units = {}
+    view._forget()  # another drive, which says nothing to convert with
+    assert speed_limits(view) == ("", "")
+
+
+def test_speed_limits_already_in_rpm_are_not_converted(app, view, monkeypatch):
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.units = {
+        cia402.SI_UNIT_VELOCITY.where: 0x00B44700,
+        cia402.ENCODER_INCREMENTS.where: 4096,
+        cia402.MOTOR_REVOLUTIONS.where: 1,
+    }
+    view._fit_to_drive()
+    view.limits[cia402.MAX_PROFILE_VELOCITY.where].setValue(3000)
+    assert speed_limits(view) == ("", "")
+
+
 # --- only what this drive has ------------------------------------------------------------
 def test_modes_are_restricted_to_the_ones_the_drive_reports(app, view):
     view._show_modes(cia402.modes_in(0b000111))  # profile position, velocity, profile velocity
