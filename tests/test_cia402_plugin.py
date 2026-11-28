@@ -15,6 +15,7 @@ with what to write.
 """
 
 import struct
+import threading
 from pathlib import Path
 
 import pytest
@@ -1105,6 +1106,34 @@ def test_an_enable_planned_before_a_stop_is_not_carried_out(app, view, monkeypat
     while queue:
         step()
     assert all(word & cia402.HALT for word in controlwords(drive)), drive.written
+
+
+def test_a_stop_made_while_a_write_is_going_comes_after_it(app, view, monkeypatch):
+    """The halt release already on its way on the worker when the window
+    closes: the stop waits for it rather than going first and being undone."""
+    drive, queue, step = held_back(view, monkeypatch)
+    view.target.setValue(1500)
+    view._write_target()
+    step()  # the target taken: the release is queued next
+    release, _done = queue.pop(0)
+    writing, go = threading.Event(), threading.Event()
+    write = drive.write
+
+    def slow(obj, value):
+        if obj.index == cia402.CONTROLWORD.index and not value & cia402.HALT:
+            writing.set()
+            go.wait(5)
+        write(obj, value)
+
+    monkeypatch.setattr(drive, "write", slow)
+    worker = threading.Thread(target=release)
+    worker.start()
+    assert writing.wait(5)
+    threading.Timer(0.2, go.set).start()  # the release lands while the stop is waiting
+    view.stop_demand(background=False)
+    worker.join(5)
+    assert controlwords(drive)[-1] & cia402.HALT, drive.written
+    assert drive.written[-1] == (cia402.TARGET_VELOCITY.index, 0)
 
 
 def test_a_command_after_a_stop_goes_through(app, view, monkeypatch):

@@ -23,6 +23,8 @@ would be dismissed unread, and one that never appeared would be worse.
 
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -250,6 +252,9 @@ class MotorView(QWidget):
         #: steps notes it when it starts and sends nothing more once it moves:
         #: see ``_still``.
         self._stops = 0
+        #: Held over a command's check and its write, and over a stop being
+        #: counted, so a stop never lands between the two: see ``_send``.
+        self._sending = threading.Lock()
         #: Nothing has been read yet, so the state is not "Not ready to switch
         #: on" -- it is unknown, and saying the first would be inventing news.
         self._read_something = False
@@ -1211,9 +1216,8 @@ class MotorView(QWidget):
 
         def job():
             for step in steps:
-                if not self._still(stops):
+                if not self._send(stops, drive, cia402.CONTROLWORD, step.controlword | held):
                     return None
-                drive.write(cia402.CONTROLWORD, step.controlword | held)
             return steps[-1].what
 
         def done(_last, error) -> None:
@@ -1283,8 +1287,7 @@ class MotorView(QWidget):
         stops = self._stops
 
         def job() -> None:
-            if self._still(stops):
-                drive.write(obj, value)
+            self._send(stops, drive, obj, value)
 
         def done(_result, error) -> None:
             self._busy = False
@@ -1309,10 +1312,24 @@ class MotorView(QWidget):
         a command may still be queued, or waiting for the GUI thread to send
         it. Sent after the stop, the rest would undo it -- the halt taken off,
         or the drive enabled again -- so it is not sent. Checked again before
-        each write on the worker, which narrows the gap to a write already
-        going when the stop was made.
+        each write on the worker, together with the write (``_send``), so
+        none comes after the stop.
         """
         return stops == self._stops
+
+    def _send(self, stops: int, drive, obj: Object, value: int) -> bool:
+        """Write for a command, unless a stop has been made since it began.
+
+        The check and the write are one step, which a stop waits for: checked
+        and then written apart, a stop made between the two -- on the GUI
+        thread, as the window closes -- was followed by the write, and a halt
+        it had just set was taken off again.
+        """
+        with self._sending:
+            if not self._still(stops):
+                return False
+            drive.write(obj, value)
+            return True
 
     # --- and stopping when nobody is looking ------------------------------------------------
     def set_visible_to_user(self, on: bool) -> None:
@@ -1363,7 +1380,10 @@ class MotorView(QWidget):
         """
         # First, and even with nothing to write: whatever a command still had
         # to send would undo the stop, or start what it has just put down.
-        self._stops += 1
+        # Under the lock, so a command's write already going finishes first,
+        # and the stop's writes come after it.
+        with self._sending:
+            self._stops += 1
         node = self._label()
         writes = cia402.stop_writes(self.mode, self.statusword, self.disable_too.isChecked())
         if not writes:
