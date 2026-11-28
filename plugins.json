@@ -5,10 +5,10 @@
       "name": "cia402",
       "title": "Motor control (CiA 402)",
       "description": "Drives a motor controller: its state, its mode, its target and what it is doing.",
-      "version": "2.2",
+      "version": "2.3",
       "api_version": 3,
-      "url": "https://github.com/davhodg/pycangui-cia402/releases/download/v2.2/cia402-2.2.zip",
-      "sha256": "f164a2b4516021971131ba5a781598991468288708ec04e83969c98d477a59e3",
+      "url": "https://github.com/davhodg/pycangui-cia402/releases/download/v2.3/cia402-2.3.zip",
+      "sha256": "8cb99f25124e4a352e51f7014cb1f130f6f93e6f32bd19945bd656d80522d81a",
       "page": "https://github.com/davhodg/pycangui-cia402"
     }
   ]

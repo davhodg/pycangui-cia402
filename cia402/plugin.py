@@ -53,7 +53,7 @@ API_VERSION = 3
 NAME = "Motor control (CiA 402)"
 #: The pane's title: a CANopen node or a drive another plugin provides.
 TITLE = "Motor control"
-VERSION = "2.2"
+VERSION = "2.3"
 DESCRIPTION = "Drive state machine, modes and targets by CiA 402."
 
 ENABLE_TITLE = "Enable the drive?"
