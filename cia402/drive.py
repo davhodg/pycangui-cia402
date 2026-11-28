@@ -79,6 +79,19 @@ VELOCITY_UNITS = "velocity units"
 POSITION_ACTUAL = Object(0x6064, 0, "Position", "<i", POSITION_UNITS, "position")
 VELOCITY_ACTUAL = Object(0x606C, 0, "Velocity", "<i", VELOCITY_UNITS, "velocity")
 TORQUE_ACTUAL = Object(0x6077, 0, "Torque", "<h", "per mille of rated")
+CURRENT_ACTUAL = Object(0x6078, 0, "Current", "<h", "per mille of rated")
+#: What per mille of rated is: read once, as the units are, to show torque
+#: and current in newton metres and amps beside it.
+MOTOR_RATED_CURRENT = Object(0x6075, 0, "Motor rated current", "<I", "mA")
+MOTOR_RATED_TORQUE = Object(0x6076, 0, "Motor rated torque", "<I", "mN m")
+RATINGS = (MOTOR_RATED_CURRENT, MOTOR_RATED_TORQUE)
+
+
+def of_rated(per_mille: int, rated_milli: int | None) -> float | None:
+    """A value in per mille of rated, in the rated value's whole unit -- N m
+    from mN m, A from mA -- or None where the rating is not known."""
+    return per_mille * rated_milli / 1_000_000 if rated_milli else None
+
 
 TARGET_POSITION = Object(0x607A, 0, "Target position", "<i", POSITION_UNITS, "position")
 TARGET_VELOCITY = Object(0x60FF, 0, "Target velocity", "<i", VELOCITY_UNITS, "velocity")
@@ -335,7 +348,14 @@ def modes_in(supported: int) -> set[int]:
 #: Read every round. Deliberately short: an SDO round is a round trip per
 #: object, and a screen that reads twenty things at 1 Hz is worse than one that
 #: reads six at 5 Hz.
-WATCHED = (STATUSWORD, MODE_DISPLAY, POSITION_ACTUAL, VELOCITY_ACTUAL, TORQUE_ACTUAL)
+WATCHED = (
+    STATUSWORD,
+    MODE_DISPLAY,
+    POSITION_ACTUAL,
+    VELOCITY_ACTUAL,
+    TORQUE_ACTUAL,
+    CURRENT_ACTUAL,
+)
 
 
 def watched(mode: int) -> tuple[Object, ...]:
@@ -799,9 +819,22 @@ def word_after_target(mode: int, statusword: int) -> int | None:
     return ENABLE_OPERATION | operation_bits(mode)
 
 
-def can_set_target(mode: int) -> tuple[bool, str]:
-    """Whether a target can usefully be written over SDO in this mode, and why not."""
-    if mode in CYCLIC:
+def can_set_target(mode: int, cycled: bool = False) -> tuple[bool, str]:
+    """Whether a target can usefully be written in this mode, and why not.
+
+    ``cycled`` when the device sends the target again every cycle as process
+    data -- an EtherCAT slave's mapped output -- so a value written once is
+    held. Then cyclic sync velocity and torque take one, as their profile
+    modes do but with no ramp. Cyclic sync position never does: a position
+    written once is a jump to it with no profile, which a drive either lunges
+    for or trips on.
+    """
+    if mode == 8 and cycled:
+        return False, (
+            "Cyclic sync position expects a position every cycle on a path that "
+            "something plans. One written here would be a jump with no profile."
+        )
+    if mode in CYCLIC and not cycled:
         return False, (
             f"{mode_name(mode)} expects a new target every cycle, over a PDO, from "
             "something keeping time. One written here would be stale before it "

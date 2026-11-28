@@ -118,10 +118,11 @@ GONE = (
 #: drive was set up in, which only the drive can say.
 UNITS_NOTE = (
     "Position and velocity are in the drive's own units, as 0x60A8 and 0x60A9 "
-    "say when it has them, and torque in per mille of rated. The two speed "
+    "say when it has them, and torque and current in per mille of rated, with "
+    "N m and A beside them where the drive gives its ratings. The two speed "
     "limits are also shown in each other's unit where the drive says how to "
-    "convert; nothing else is, since that needs the gearing and the motor "
-    "rating, which are the drive's business. Velocity mode's own objects are in rpm."
+    "convert; positions are not, since that needs the gearing, which is the "
+    "drive's business. Velocity mode's own objects are in rpm."
 )
 
 
@@ -132,6 +133,13 @@ SPEED_LIMITS = (cia402.MAX_PROFILE_VELOCITY, cia402.MAX_MOTOR_SPEED)
 def amount(value: float) -> str:
     """A converted value: whole above a hundred, three figures below."""
     return f"{value:,.0f}" if abs(value) >= 100 else f"{value:,.3g}"
+
+
+#: Torque and current, by the rating they are per mille of, and its whole unit.
+RATED_BY = {
+    cia402.TORQUE_ACTUAL.where: (cia402.MOTOR_RATED_TORQUE, "N m"),
+    cia402.CURRENT_ACTUAL.where: (cia402.MOTOR_RATED_CURRENT, "A"),
+}
 
 
 def about(obj: Object, unit: str | None = None) -> str:
@@ -465,9 +473,16 @@ class MotorView(QWidget):
 
         # --- what it is doing -----------------------------------------------------------
         self.actuals: dict[tuple[int, int], QLabel] = {}
+        #: Torque and current in N m and A, where the motor's ratings are known.
+        self.in_real_units: dict[tuple[int, int], QLabel] = {}
         watched = QGridLayout()
         for row, obj in enumerate(
-            (cia402.POSITION_ACTUAL, cia402.VELOCITY_ACTUAL, cia402.TORQUE_ACTUAL)
+            (
+                cia402.POSITION_ACTUAL,
+                cia402.VELOCITY_ACTUAL,
+                cia402.TORQUE_ACTUAL,
+                cia402.CURRENT_ACTUAL,
+            )
         ):
             value = QLabel("--")
             # Fixed pitch, so the digits do not move sideways as they change,
@@ -487,6 +502,11 @@ class MotorView(QWidget):
             watched.addWidget(name, row, 0)
             watched.addWidget(value, row, 1)
             watched.addWidget(unit, row, 2)
+            if obj.where in RATED_BY:
+                real = QLabel("")
+                real.setEnabled(False)
+                self.in_real_units[obj.where] = real
+                watched.addWidget(real, row, 3)
         #: The mode's demand, under what the drive is actually doing: the
         #: object changes with the mode, so the row is relabelled with it.
         demand = (QLabel(""), QLabel("--"), QLabel(""))
@@ -494,16 +514,16 @@ class MotorView(QWidget):
         demand[1].setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._demand_row = demand
         for column, widget in enumerate(demand):
-            watched.addWidget(widget, 3, column)
+            watched.addWidget(widget, 4, column)
         #: The drive's inputs: limit and home switches, read with the rest.
         self.inputs = QLabel("--")
         self.inputs.setWordWrap(True)
         inputs_name = QLabel("Inputs:")
         for widget in (inputs_name, self.inputs):
             widget.setToolTip(INPUTS_TIP)
-        watched.addWidget(inputs_name, 4, 0)
-        watched.addWidget(self.inputs, 4, 1, 1, 3)
-        watched.setColumnStretch(3, 1)
+        watched.addWidget(inputs_name, 5, 0)
+        watched.addWidget(self.inputs, 5, 1, 1, 4)
+        watched.setColumnStretch(4, 1)
 
         self.banner = QLabel("")
         self.banner.setWordWrap(True)
@@ -617,6 +637,14 @@ class MotorView(QWidget):
         """The device chosen, or None."""
         key = self.node.currentData()
         return None if key is None else self.app.device(key)
+
+    def _cycled(self) -> bool:
+        """Whether the chosen device sends this mode's target again every
+        cycle, as process data, so one written here is held."""
+        device = self._device()
+        target = cia402.TARGET_FOR.get(self.mode)
+        cycles = getattr(device, "cycles", None)  # a provider from before it was asked
+        return bool(target is not None and cycles is not None and cycles(*target.where))
 
     def _label(self) -> str:
         device = self._device()
@@ -765,6 +793,8 @@ class MotorView(QWidget):
         self.mode_now.setText("")
         for value in self.actuals.values():
             value.setText("--")
+        for real in self.in_real_units.values():
+            real.setText("")
         self.inputs.setText("--")
         self._show_velocity_row()
         self._show_demand_row()
@@ -846,7 +876,7 @@ class MotorView(QWidget):
                 self._show_units()
 
             self._background(lambda o=obj: drive.read(o), done)
-        for obj in cia402.SCALING:
+        for obj in (*cia402.SCALING, *cia402.RATINGS):
             if not self._has(obj):
                 continue
 
@@ -1044,10 +1074,35 @@ class MotorView(QWidget):
             self.inputs.setText(", ".join(active) if active else "none active")
         elif obj.where == cia402.VL_VELOCITY_ACTUAL.where:
             self._velocity_row[1].setText(f"{int(value):,}")
+            self._to_signals(obj, value)
         elif (demand := cia402.DEMAND_FOR.get(self.mode)) is not None and obj.where == demand.where:
             self._demand_row[1].setText(f"{int(value):,}")
+            self._to_signals(obj, value)
         elif (label := self.actuals.get(obj.where)) is not None:
             label.setText(f"{int(value):,}")
+            if (real := self.in_real_units.get(obj.where)) is not None:
+                amount_, unit = self._in_real_units(obj, int(value))
+                real.setText("" if amount_ is None else f"= {amount(amount_)} {unit}")
+            self._to_signals(obj, value)
+
+    def _in_real_units(self, obj: Object, value: int) -> tuple[float | None, str]:
+        """Torque in N m, or current in A, from per mille of the motor's rating."""
+        rating, unit = RATED_BY[obj.where]
+        return cia402.of_rated(value, self._scaling.get(rating.where)), unit
+
+    def _to_signals(self, obj: Object, value: int) -> None:
+        """A polled value into Signals and Plot, under the drive, to plot and
+        share like any other: demand against actual, say, while tuning. Only
+        while polling, as custom panes do -- a value read once is a reading,
+        not a series."""
+        if not self.poller.running:
+            return
+        group = self._label()
+        self.app.signal(group, obj.name, int(value), self._unit(obj))
+        if obj.where in RATED_BY:
+            real, unit = self._in_real_units(obj, int(value))
+            if real is not None:
+                self.app.signal(group, f"{obj.name} ({unit})", real, unit)
 
     def _shown_in(self, where: tuple[int, int]) -> Object:
         """The object a row of actual values shows in the present mode."""
@@ -1167,7 +1222,7 @@ class MotorView(QWidget):
         self.banner.show()
 
     def _show_target(self) -> None:
-        allowed, why = cia402.can_set_target(self.mode)
+        allowed, why = cia402.can_set_target(self.mode, self._cycled())
         obj = cia402.TARGET_FOR.get(self.mode)
         self.target.setEnabled(allowed)
         self.set_target.setEnabled(allowed)
@@ -1313,8 +1368,9 @@ class MotorView(QWidget):
 
     def _write_target(self) -> None:
         obj = cia402.TARGET_FOR.get(self.mode)
-        if obj is None:
-            self.app.warn(cia402.can_set_target(self.mode)[1])
+        allowed, why = cia402.can_set_target(self.mode, self._cycled())
+        if obj is None or not allowed:
+            self.app.warn(why)
             return
         word = cia402.word_after_target(self.mode, self.statusword)
         if word is None:

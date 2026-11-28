@@ -945,6 +945,96 @@ def test_the_inputs_are_polled_and_shown(app, view):
     assert view.inputs.text() == "--"
 
 
+# --- torque and current in N m and A, Signals and Plot, cyclic modes -------------------------
+def test_per_mille_of_rated_in_whole_units():
+    assert cia402.of_rated(500, 2400) == pytest.approx(1.2), "half of 2.4 N m"
+    assert cia402.of_rated(-250, 8000) == pytest.approx(-2.0)
+    assert cia402.of_rated(500, None) is None and cia402.of_rated(500, 0) is None
+
+
+def test_torque_and_current_are_shown_in_n_m_and_a_once_the_ratings_are_read(
+    app, view, monkeypatch
+):
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.units = {cia402.MOTOR_RATED_TORQUE.where: 2400, cia402.MOTOR_RATED_CURRENT.where: 8000}
+    torque = view.in_real_units[cia402.TORQUE_ACTUAL.where]
+    current = view.in_real_units[cia402.CURRENT_ACTUAL.where]
+    view._took(cia402.TORQUE_ACTUAL, 500)
+    assert torque.text() == "", "not until the rating is known"
+    view._fit_to_drive()
+    view._took(cia402.TORQUE_ACTUAL, 500)
+    view._took(cia402.CURRENT_ACTUAL, 250)
+    assert torque.text() == f"= {plugin.amount(1.2)} N m"
+    assert current.text() == f"= {plugin.amount(2.0)} A"
+    view._forget()
+    assert torque.text() == current.text() == ""
+
+
+def test_polled_values_go_to_signals_and_plot(app, window, view, monkeypatch):
+    drive = wired(view, monkeypatch, ENABLED)
+    drive.units = {cia402.MOTOR_RATED_TORQUE.where: 2400}
+    view._fit_to_drive()
+    sent = []
+    monkeypatch.setattr(view.app, "signal", lambda *args: sent.append(args))
+    view._took(cia402.TORQUE_ACTUAL, 500)
+    assert sent == [], "a value read once is not a series"
+
+    monkeypatch.setattr(type(view.poller), "running", property(lambda _self: True))
+    view._took(cia402.TORQUE_ACTUAL, 500)
+    view._took(cia402.MODE_DISPLAY, 3)
+    view._took(cia402.VELOCITY_DEMAND, 1200)
+    values = [(name, value) for _group, name, value, _unit in sent]
+    assert values == [
+        (cia402.TORQUE_ACTUAL.name, 500),
+        (f"{cia402.TORQUE_ACTUAL.name} (N m)", pytest.approx(1.2)),
+        (cia402.VELOCITY_DEMAND.name, 1200),
+    ]
+    assert {group for group, *_rest in sent} == {view._label()}
+
+
+def test_cyclic_velocity_and_torque_take_a_target_the_device_sends_every_cycle():
+    for mode in (9, 10):
+        assert not cia402.can_set_target(mode)[0], "sent once, it would be stale"
+        assert cia402.can_set_target(mode, cycled=True)[0]
+    assert not cia402.can_set_target(8, cycled=True)[0], "a position once is a jump"
+    assert cia402.can_set_target(3, cycled=True)[0], "the other modes as before"
+
+
+class CyclingDevice:
+    """Enough of a device for the pane to ask whether it cycles a target."""
+
+    def __init__(self, cycled):
+        self.cycled = set(cycled)
+
+    def cycles(self, index, sub=0):
+        return (index, sub) in self.cycled
+
+    label = "Slave 1"
+
+    def has(self, _index, _sub=0):
+        return None  # nothing to go by, so everything is offered
+
+    def receives(self):
+        return []
+
+
+def test_the_pane_offers_a_cyclic_target_only_where_the_device_cycles_it(app, view, monkeypatch):
+    drive = wired(view, monkeypatch, ENABLED)
+    device = CyclingDevice({cia402.TARGET_VELOCITY.where})
+    monkeypatch.setattr(view, "_device", lambda: device)
+    view._took(cia402.MODE_DISPLAY, 9)
+    assert view.set_target.isEnabled()
+    view.target.setValue(300)
+    view._write_target()
+    assert (cia402.TARGET_VELOCITY.index, 300) in drive.written
+
+    view._took(cia402.MODE_DISPLAY, 10)
+    assert not view.set_target.isEnabled(), "torque's target is not cycled here"
+    drive.written.clear()
+    view._write_target()
+    assert drive.written == []
+
+
 # --- only what this drive has ------------------------------------------------------------
 def test_modes_are_restricted_to_the_ones_the_drive_reports(app, view):
     view._show_modes(cia402.modes_in(0b000111))  # profile position, velocity, profile velocity

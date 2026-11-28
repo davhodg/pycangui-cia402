@@ -377,6 +377,12 @@ class SettingsTab(QWidget):
         divisor = scaling.get(cia402.VELOCITY_FACTOR_DIVISOR.where)
         if numerator and divisor:
             lines.append(f"Velocity factor: {numerator:,} / {divisor:,} (0x6096).")
+        current = scaling.get(cia402.MOTOR_RATED_CURRENT.where)
+        torque = scaling.get(cia402.MOTOR_RATED_TORQUE.where)
+        if current:
+            lines.append(f"Motor rated current: {current:,} mA (0x6075).")
+        if torque:
+            lines.append(f"Motor rated torque: {torque:,} mN m (0x6076).")
         self.scaling.setText("\n".join(lines))
 
     # --- reading and writing --------------------------------------------------------------
