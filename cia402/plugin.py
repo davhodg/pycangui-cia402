@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -424,7 +425,7 @@ class MotorView(QWidget):
         # --- limits -------------------------------------------------------------------
         # Not targets: a drive in any mode is held to its maximum torque, and
         # the speed limits cap whatever a profile or a controller asks for.
-        # Read when a drive is chosen, written when somebody asks. A box of
+        # Read and written when somebody asks. A box of
         # their own, one to a line: three limits along a single row read as
         # one setting, and they are three separate promises about a machine.
         self.limits: dict[tuple[int, int], QSpinBox] = {}
@@ -577,14 +578,32 @@ class MotorView(QWidget):
         units.setWordWrap(True)
         units.setEnabled(False)
 
+        # Two tabs: what is used while the drive runs, and what is set once
+        # for a machine. The state and its commands stay above both, so Quick
+        # stop and Disable are there whichever tab is showing.
+        run_tab = QWidget()
+        run_layout = QVBoxLayout(run_tab)
+        run_layout.addWidget(run_box)
+        run_layout.addWidget(watch_box)
+        run_layout.addWidget(units)
+        run_layout.addStretch()
+
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_layout.addWidget(limits_box)
+        settings_layout.addStretch()
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(run_tab, "Run")
+        self.tabs.addTab(settings_tab, "Settings")
+        self.tabs.setTabToolTip(0, "Mode, target and what the drive is doing.")
+        self.tabs.setTabToolTip(1, "What is set once for a machine: read and written when asked.")
+
         layout = QVBoxLayout(self)
         layout.addLayout(where)
         layout.addWidget(self.rpdo_warning)
         layout.addWidget(status_box)
-        layout.addWidget(run_box)
-        layout.addWidget(limits_box)
-        layout.addWidget(watch_box)
-        layout.addWidget(units)
+        layout.addWidget(self.tabs)
         layout.addStretch()
 
         self.poller = self.app.poller(self)

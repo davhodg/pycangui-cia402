@@ -726,6 +726,24 @@ def test_speed_limits_already_in_rpm_are_not_converted(app, view, monkeypatch):
     assert speed_limits(view) == ("", "")
 
 
+def test_the_stop_is_reachable_whichever_tab_is_showing(app, view):
+    """The state and its commands sit above the tabs, never on one."""
+    for button in (view.enable, view.disable, view.quick_stop, view.reset):
+        assert not view.tabs.isAncestorOf(button)
+    for index in range(view.tabs.count()):
+        view.tabs.setCurrentIndex(index)
+        assert all(button.isVisibleTo(view) for button in (view.disable, view.quick_stop)), (
+            view.tabs.tabText(index)
+        )
+
+
+def test_the_limits_are_settings_and_the_target_is_run(app, view):
+    run, settings = (view.tabs.widget(i) for i in range(2))
+    assert settings.isAncestorOf(view.limits[cia402.MAX_TORQUE.where])
+    assert settings.isAncestorOf(view.write_limits_btn)
+    assert run.isAncestorOf(view.target) and run.isAncestorOf(view.poll)
+
+
 # --- only what this drive has ------------------------------------------------------------
 def test_modes_are_restricted_to_the_ones_the_drive_reports(app, view):
     view._show_modes(cia402.modes_in(0b000111))  # profile position, velocity, profile velocity
