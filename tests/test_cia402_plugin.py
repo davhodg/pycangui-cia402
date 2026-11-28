@@ -25,6 +25,7 @@ from PySide6.QtCore import QObject, QSettings, Signal
 
 from cia402 import drive as cia402
 from cia402 import plugin
+from cia402 import settings as plugin_settings
 from cia402.plugin import MAKER_NONE_SET, maker_bits
 
 #: The repository, whose cia402 folder is the plugin as it is installed.
@@ -740,8 +741,129 @@ def test_the_stop_is_reachable_whichever_tab_is_showing(app, view):
 def test_the_limits_are_settings_and_the_target_is_run(app, view):
     run, settings = (view.tabs.widget(i) for i in range(2))
     assert settings.isAncestorOf(view.limits[cia402.MAX_TORQUE.where])
-    assert settings.isAncestorOf(view.write_limits_btn)
+    assert settings.isAncestorOf(view.settings_tab.write_btn)
     assert run.isAncestorOf(view.target) and run.isAncestorOf(view.poll)
+
+
+def settings_drive(view, monkeypatch, answers: dict, refuses=()):
+    """A drive answering ``answers`` by (index, sub), and refusing ``refuses``."""
+    drive = wired(view, monkeypatch, ENABLED)
+    read = drive.read
+
+    def answer(obj):
+        if obj.where in refuses:
+            raise RuntimeError("SDO abort 0x06020000")
+        return answers[obj.where] if obj.where in answers else read(obj)
+
+    drive.read = answer
+
+    def background(job, done):
+        """As the worker does: a failure handed to ``done``, not raised."""
+        try:
+            result = job()
+        except RuntimeError as exc:
+            done(None, exc)
+        else:
+            done(result, None)
+
+    monkeypatch.setattr(view, "_background", background)
+    return drive
+
+
+def field(view, obj):
+    return view.settings_tab.fields[obj.where]
+
+
+def test_the_settings_are_read_when_the_tab_is_first_shown(app, view, monkeypatch):
+    settings_drive(view, monkeypatch, {cia402.PROFILE_ACCELERATION.where: 5000})
+    view.tabs.setCurrentIndex(1)
+    assert field(view, cia402.PROFILE_ACCELERATION).value() == 5000
+    assert not view.settings_tab.changed(), "read, so nothing to write"
+    assert not view.settings_tab.write_btn.isEnabled()
+
+    field(view, cia402.PROFILE_ACCELERATION).widget.setValue(1)
+    view.tabs.setCurrentIndex(0)
+    view.tabs.setCurrentIndex(1)
+    assert field(view, cia402.PROFILE_ACCELERATION).value() == 1, "read once, not on every visit"
+
+
+def test_only_what_was_changed_is_written_and_only_when_agreed(app, window, view, monkeypatch):
+    drive = settings_drive(view, monkeypatch, {cia402.HOMING_METHOD.where: 17})
+    view.settings_tab.read_all()
+    field(view, cia402.HOME_OFFSET).widget.setValue(-250)
+    assert [f.obj.where for f in view.settings_tab.changed()] == [cia402.HOME_OFFSET.where]
+    assert view.settings_tab.write_btn.isEnabled()
+
+    agreed = []
+    monkeypatch.setattr(window.confirm, "ask", lambda *_a: agreed.append(1) or False)
+    view.settings_tab.write_changed()
+    assert drive.written == [], "not agreed"
+
+    monkeypatch.setattr(window.confirm, "ask", lambda *_a: True)
+    view.settings_tab.write_changed()
+    assert drive.written == [(cia402.HOME_OFFSET.index, -250)]
+    assert not view.settings_tab.changed(), "written, so no longer a change"
+
+
+def test_a_setting_the_drive_refuses_is_said_once_and_the_rest_are_read(
+    app, window, view, monkeypatch
+):
+    settings_drive(
+        view,
+        monkeypatch,
+        {cia402.QUICK_STOP_DECELERATION.where: 9000},
+        refuses={cia402.HOME_OFFSET.where, cia402.POSITION_WINDOW.where},
+    )
+    warned = []
+    monkeypatch.setattr(view.app, "warn", warned.append)
+    view.settings_tab.read_all()
+    assert field(view, cia402.QUICK_STOP_DECELERATION).value() == 9000
+    assert len(warned) == 1
+
+
+def test_a_code_not_in_the_standard_is_shown_as_the_drive_has_it(app, view, monkeypatch):
+    settings_drive(
+        view,
+        monkeypatch,
+        {cia402.QUICK_STOP_OPTION.where: -3, cia402.HOMING_METHOD.where: 99},
+    )
+    view.settings_tab.read_all()
+    assert field(view, cia402.QUICK_STOP_OPTION).value() == -3
+    assert field(view, cia402.HOMING_METHOD).value() == 99
+    assert not view.settings_tab.changed(), "shown, not changed"
+
+
+def test_polarity_keeps_the_bits_it_does_not_show(app, window, view, monkeypatch):
+    drive = settings_drive(view, monkeypatch, {cia402.POLARITY.where: 0x81})
+    view.settings_tab.read_all()
+    polarity = field(view, cia402.POLARITY)
+    assert polarity.ticks[7].isChecked() and not polarity.ticks[6].isChecked()
+    polarity.ticks[6].setChecked(True)
+    monkeypatch.setattr(window.confirm, "ask", lambda *_a: True)
+    view.settings_tab.write_changed()
+    assert drive.written == [(cia402.POLARITY.index, 0xC1)]
+
+
+def test_another_drive_forgets_the_settings(app, view, monkeypatch):
+    settings_drive(view, monkeypatch, {cia402.PROFILE_DECELERATION.where: 700})
+    view.settings_tab.read_all()
+    field(view, cia402.PROFILE_DECELERATION).widget.setValue(3)
+    view._forget()
+    assert field(view, cia402.PROFILE_DECELERATION).value() == 0
+    assert not view.settings_tab.changed() and not view.settings_tab.read_once
+
+
+def test_a_setting_the_eds_does_not_have_is_greyed_and_not_read(app, view, monkeypatch):
+    drive = settings_drive(view, monkeypatch, {})
+    holds(view, monkeypatch, {obj.index for obj in plugin_settings.OBJECTS} - {0x6098})
+    asked = []
+    read = drive.read
+    drive.read = lambda obj: asked.append(obj.where) or read(obj)
+    view._fit_to_drive()
+    asked.clear()
+    view.settings_tab.read_all()
+    assert not field(view, cia402.HOMING_METHOD).widget.isEnabled()
+    assert cia402.HOMING_METHOD.where not in asked
 
 
 # --- only what this drive has ------------------------------------------------------------

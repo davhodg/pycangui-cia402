@@ -31,11 +31,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -47,6 +49,7 @@ from PySide6.QtWidgets import (
 # into the one pycangui ships and editing your own would do nothing.
 from . import drive as cia402
 from .drive import Drive, Object
+from .settings import SettingsTab
 
 API_VERSION = 3
 
@@ -157,10 +160,6 @@ def error_text(code: int, meaning: str) -> str:
     return f"Error code 0x{code:04X}: {meaning}"
 
 
-WRITE_LIMITS_TIP = (
-    "Write all three to the drive. A limit is what the machine cannot\n"
-    "exceed, so raising one lets it do more than it could a moment ago."
-)
 MISSING_TIP = "This drive's EDS does not have this object, so there is nothing to write to."
 MODE_TIP = "Written to 0x6060. What the drive is actually in is beside it."
 MODE_SUPPORTED_TIP = (
@@ -177,13 +176,6 @@ MAKER_CONTROL_TIP = (
 MAKER_STATUS_TIP = "The maker's bits in the statusword the drive last answered with."
 MAKER_NONE_SET = "no maker bits in the statusword"
 MAKER_NOT_READ = "statusword not read yet"
-LIMITS_TITLE = "Change the drive's limits?"
-LIMITS_WARNING = (
-    "These are the limits the drive holds itself to in every mode: the\n"
-    "most torque it will apply, and the fastest it will go. Raising one\n"
-    "lets the machine do more than it could before, whatever is asking.\n\n"
-    "Write them?"
-)
 
 
 def maker_bits(bits) -> str:
@@ -422,48 +414,16 @@ class MotorView(QWidget):
         self.target_note.setWordWrap(True)
         self.target_note.setEnabled(False)
 
-        # --- limits -------------------------------------------------------------------
-        # Not targets: a drive in any mode is held to its maximum torque, and
-        # the speed limits cap whatever a profile or a controller asks for.
-        # Read and written when somebody asks. A box of
-        # their own, one to a line: three limits along a single row read as
-        # one setting, and they are three separate promises about a machine.
-        self.limits: dict[tuple[int, int], QSpinBox] = {}
-        #: Each speed limit in the other's unit, where the drive says enough
-        #: to work it out: see _show_speed_limits.
-        self.limit_in_other: dict[tuple[int, int], QLabel] = {}
-        limits_grid = QGridLayout()
-        for row, obj in enumerate(cia402.LIMITS):
-            box = QSpinBox()
-            box.setRange(0, 2_000_000_000)
-            box.setGroupSeparatorShown(True)
-            self.limits[obj.where] = box
-            name = QLabel(f"{obj.name}:")
-            unit = QLabel(obj.unit)
-            for widget in (name, box, unit):
-                widget.setToolTip(about(obj))
-            self._unit_labels.append((obj, unit, (name, unit)))
-            limits_grid.addWidget(name, row, 0)
-            limits_grid.addWidget(box, row, 1)
-            limits_grid.addWidget(unit, row, 2)
-            if obj in SPEED_LIMITS:
-                other = QLabel("")
-                other.setEnabled(False)
-                self.limit_in_other[obj.where] = other
-                box.valueChanged.connect(lambda _v: self._show_speed_limits())
-                limits_grid.addWidget(other, row, 3)
-        limits_grid.setColumnStretch(4, 1)
-
-        self.read_limits_btn = self.app.with_icon(QPushButton("Read limits"), "read")
-        self.read_limits_btn.setToolTip("Read all three from the drive.")
-        self.read_limits_btn.clicked.connect(self._read_limits)
-        self.write_limits_btn = self.app.with_icon(QPushButton("Write limits"), "write")
-        self.write_limits_btn.setToolTip(WRITE_LIMITS_TIP)
-        self.write_limits_btn.clicked.connect(self._write_limits)
-        limits_buttons = QHBoxLayout()
-        limits_buttons.addStretch()
-        limits_buttons.addWidget(self.read_limits_btn)
-        limits_buttons.addWidget(self.write_limits_btn)
+        # --- settings -----------------------------------------------------------------
+        # Limits, ramps, homing, windows and how it stops: set once for a
+        # machine, read and written when asked, on a tab of their own.
+        self.settings_tab = SettingsTab(self, lambda obj: about(obj, self._unit(obj)))
+        self.settings_tab.units_note.setText(UNITS_NOTE)
+        #: The limits' boxes, and each speed limit in the other's unit.
+        self.limits = {
+            obj.where: self.settings_tab.fields[obj.where].widget for obj in cia402.LIMITS
+        }
+        self.limit_in_other = self.settings_tab.in_other
 
         settings = QGridLayout()
         settings.addWidget(QLabel("Mode:"), 0, 0)
@@ -564,19 +524,10 @@ class MotorView(QWidget):
         run_inside.addWidget(self.target_note)
         run_inside.addWidget(self.disable_too)
 
-        limits_box = QGroupBox("Limits")
-        limits_inside = QVBoxLayout(limits_box)
-        limits_inside.addLayout(limits_grid)
-        limits_inside.addLayout(limits_buttons)
-
         watch_box = QGroupBox("What it is doing")
         watch_inside = QVBoxLayout(watch_box)
         watch_inside.addLayout(watched)
         watch_inside.addLayout(polling)
-
-        units = QLabel(UNITS_NOTE)
-        units.setWordWrap(True)
-        units.setEnabled(False)
 
         # Two tabs: what is used while the drive runs, and what is set once
         # for a machine. The state and its commands stay above both, so Quick
@@ -585,19 +536,19 @@ class MotorView(QWidget):
         run_layout = QVBoxLayout(run_tab)
         run_layout.addWidget(run_box)
         run_layout.addWidget(watch_box)
-        run_layout.addWidget(units)
         run_layout.addStretch()
 
-        settings_tab = QWidget()
-        settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.addWidget(limits_box)
-        settings_layout.addStretch()
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidget(self.settings_tab)
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(run_tab, "Run")
-        self.tabs.addTab(settings_tab, "Settings")
+        self.tabs.addTab(settings_scroll, "Settings")
         self.tabs.setTabToolTip(0, "Mode, target and what the drive is doing.")
         self.tabs.setTabToolTip(1, "What is set once for a machine: read and written when asked.")
+        self.tabs.currentChanged.connect(self._on_tab)
 
         layout = QVBoxLayout(self)
         layout.addLayout(where)
@@ -776,6 +727,7 @@ class MotorView(QWidget):
         self._units.clear()  # nor its units
         self._si_velocity = None
         self._scaling.clear()
+        self.settings_tab.forget()  # nor its settings
         self.mode_now.setText("")
         for value in self.actuals.values():
             value.setText("--")
@@ -812,15 +764,10 @@ class MotorView(QWidget):
         drive's EDS lists 0x6060, and none of them says that this one
         cannot do torque.
         """
-        for where, box in self.limits.items():
-            obj = next(o for o in cia402.LIMITS if o.where == where)
-            has = self._has(obj)
-            box.setEnabled(has)
-            # Which object it is stays in the tooltip either way. It used to
-            # be replaced by the note, so looking at a drive with an EDS was
-            # the one time the pane stopped saying what it was writing to.
-            said = about(obj, self._unit(obj))
-            box.setToolTip(said if has else f"{said}\n{MISSING_TIP}")
+        # Which object it is stays in a setting's tooltip either way. It used
+        # to be replaced by the note, so looking at a drive with an EDS was
+        # the one time the pane stopped saying what it was writing to.
+        self.settings_tab.fit(self._has, MISSING_TIP, lambda obj: about(obj, self._unit(obj)))
         for where, label in self.actuals.items():
             if not self._has(self._shown_in(where)):
                 label.setText("not in the EDS")
@@ -867,7 +814,7 @@ class MotorView(QWidget):
             def scaled(value, error, obj=obj) -> None:
                 if not error:  # a drive without it: the limits are not converted
                     self._scaling[obj.where] = int(value)
-                    self._show_speed_limits()
+                    self._show_units()
 
             self._background(lambda o=obj: drive.read(o), scaled)
 
@@ -880,6 +827,7 @@ class MotorView(QWidget):
         self._show_demand_row()
         self._show_target()
         self._show_speed_limits()
+        self.settings_tab.show_scaling(self._units, self._si_velocity, self._scaling)
 
     def _show_speed_limits(self) -> None:
         """Each speed limit in the other's unit too, so they can be compared.
@@ -889,6 +837,8 @@ class MotorView(QWidget):
         resolution and velocity factor -- and not at all where its velocity
         units are rpm already.
         """
+        if getattr(self, "settings_tab", None) is None:
+            return  # still being built
         scale = cia402.rpm_per_velocity_unit(self._si_velocity, self._scaling)
         unit = self._unit(cia402.MAX_PROFILE_VELOCITY)
         profile = self.limit_in_other[cia402.MAX_PROFILE_VELOCITY.where]
@@ -933,46 +883,11 @@ class MotorView(QWidget):
         self.mode_box.blockSignals(False)
         self.mode_box.setToolTip(MODE_TIP if supported is None else MODE_SUPPORTED_TIP)
 
-    # --- limits ----------------------------------------------------------------------
-    def _read_limits(self) -> None:
-        """Read all three, so the boxes show what the drive is actually held to."""
-        drive = self._drive()
-        if drive is None:
-            return
-        for obj in cia402.LIMITS:
-            if not self._has(obj):
-                continue
-
-            def done(value, error, obj=obj) -> None:
-                if not self._went_wrong(obj, error):
-                    self.limits[obj.where].setValue(int(value))
-
-            self._background(lambda o=obj: drive.read(o), done)
-
-    def _write_limits(self) -> None:
-        """Write all three. A question first, because a limit is a promise
-        about what the machine cannot do, and raising one lets it do more."""
-        drive = self._drive()
-        if drive is None:
-            return
-        key = self.node.currentData()
-        if not self.app.confirm.ask(self, f"cia402.limits.{key}", LIMITS_TITLE, LIMITS_WARNING):
-            return
-        for obj in cia402.LIMITS:
-            if not self._has(obj):
-                continue
-            self._write_limit(drive, obj, self.limits[obj.where].value())
-
-    def _write_limit(self, drive: DeviceDrive, obj: Object, value: int) -> None:
-        """One limit, with the value bound rather than read again later."""
-
-        def done(_result, error) -> None:
-            if error:
-                self.app.warn(f"{obj.name}: {error}")
-            else:
-                self.app.log(f"{obj.name} <- {value:,}")
-
-        self._background(lambda: drive.write(obj, value), done)
+    # --- settings ------------------------------------------------------------------------
+    def _on_tab(self, index: int) -> None:
+        """The Settings tab shown: this drive's settings read, the first time."""
+        if index != 0 and not self.settings_tab.read_once:
+            self.settings_tab.read_all(quietly=True)
 
     # --- the bits the profile leaves to the maker ----------------------------------------
     def _maker_bits(self) -> int:

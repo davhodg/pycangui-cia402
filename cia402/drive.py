@@ -220,6 +220,102 @@ def rpm_per_velocity_unit(si_velocity: int | None, scaling: dict) -> float | Non
     return to_increments_per_s * 60.0 * revolutions / increments
 
 
+# --- set once for a machine: the Settings tab ------------------------------------------------
+
+ACCELERATION_UNITS = "acceleration units"
+
+SOFTWARE_LIMIT_MIN = Object(0x607D, 1, "Min position limit", "<i", POSITION_UNITS, "position")
+SOFTWARE_LIMIT_MAX = Object(0x607D, 2, "Max position limit", "<i", POSITION_UNITS, "position")
+
+PROFILE_ACCELERATION = Object(0x6083, 0, "Profile acceleration", "<I", ACCELERATION_UNITS)
+PROFILE_DECELERATION = Object(0x6084, 0, "Profile deceleration", "<I", ACCELERATION_UNITS)
+QUICK_STOP_DECELERATION = Object(0x6085, 0, "Quick stop deceleration", "<I", ACCELERATION_UNITS)
+
+HOMING_METHOD = Object(0x6098, 0, "Homing method", "<b")
+HOMING_SPEED_SWITCH = Object(0x6099, 1, "Speed to the switch", "<I", VELOCITY_UNITS, "velocity")
+HOMING_SPEED_ZERO = Object(0x6099, 2, "Speed to zero", "<I", VELOCITY_UNITS, "velocity")
+HOMING_ACCELERATION = Object(0x609A, 0, "Homing acceleration", "<I", ACCELERATION_UNITS)
+HOME_OFFSET = Object(0x607C, 0, "Home offset", "<i", POSITION_UNITS, "position")
+
+FOLLOWING_ERROR_WINDOW = Object(
+    0x6065, 0, "Following error window", "<I", POSITION_UNITS, "position"
+)
+POSITION_WINDOW = Object(0x6067, 0, "Position window", "<I", POSITION_UNITS, "position")
+#: Bit 7 turns position values round, bit 6 velocity values.
+POLARITY = Object(0x607E, 0, "Polarity", "<B")
+POLARITY_BITS = ((7, "Position reversed"), (6, "Velocity reversed"))
+
+QUICK_STOP_OPTION = Object(0x605A, 0, "Quick stop", "<h")
+SHUTDOWN_OPTION = Object(0x605B, 0, "Shutdown", "<h")
+DISABLE_OPTION = Object(0x605C, 0, "Disable operation", "<h")
+HALT_OPTION = Object(0x605D, 0, "Halt", "<h")
+FAULT_REACTION_OPTION = Object(0x605E, 0, "Fault reaction", "<h")
+
+_COAST = "Power off: the motor coasts"
+_RAMPS = {
+    1: "the slow-down ramp",
+    2: "the quick stop ramp",
+    3: "the current limit",
+    4: "the voltage limit",
+}
+
+#: What each option code makes the drive do, from CiA 402. Negative codes are
+#: the maker's own, shown as a number rather than guessed at.
+OPTIONS = {
+    QUICK_STOP_OPTION.where: {
+        0: _COAST,
+        **{code: f"Stop on {ramp}, then switch off" for code, ramp in _RAMPS.items()},
+        **{code + 4: f"Stop on {ramp}, and stay in quick stop" for code, ramp in _RAMPS.items()},
+    },
+    SHUTDOWN_OPTION.where: {0: _COAST, 1: "Stop on the slow-down ramp, then switch off"},
+    DISABLE_OPTION.where: {0: _COAST, 1: "Stop on the slow-down ramp, then switch off"},
+    HALT_OPTION.where: {code: f"Stop on {ramp}" for code, ramp in _RAMPS.items()},
+    FAULT_REACTION_OPTION.where: {0: _COAST, **{c: f"Stop on {r}" for c, r in _RAMPS.items()}},
+}
+
+
+def _homing_methods() -> dict[int, str]:
+    """The homing methods CiA 402 numbers, by what each homes on."""
+    named = {
+        1: "Negative limit switch and index pulse",
+        2: "Positive limit switch and index pulse",
+        17: "Negative limit switch",
+        18: "Positive limit switch",
+        33: "Index pulse, moving negative",
+        34: "Index pulse, moving positive",
+        35: "Current position",
+        37: "Current position",
+    }
+    families = (
+        (3, "Positive home switch", True),
+        (5, "Negative home switch", True),
+        (7, "Home switch, positive limit switch side", True),
+        (11, "Home switch, negative limit switch side", True),
+        (19, "Positive home switch", False),
+        (21, "Negative home switch", False),
+        (23, "Home switch, positive limit switch side", False),
+        (27, "Home switch, negative limit switch side", False),
+    )
+    for first, what, index in families:
+        count = 4 if "side" in what else 2
+        for edge in range(count):
+            # Which edge of the switch each stops at is in the method number,
+            # which the drive's manual uses too.
+            named[first + edge] = f"{what}{' and index pulse' if index else ''}"
+    return dict(sorted(named.items()))
+
+
+HOMING_METHODS = _homing_methods()
+
+
+def choice_name(choices: dict[int, str], value: int) -> str:
+    """A code as a line in a list: its number and what it means, or that it is
+    the maker's own or not in the standard."""
+    if value in choices:
+        return f"{value}  {choices[value]}"
+    return f"{value}  Manufacturer specific" if value < 0 else f"{value}  Not in CiA 402"
+
+
 #: Which modes this drive has, as a bit per mode. Bit 0 is profile position,
 #: so the bit number is the mode number minus one, and the top sixteen bits
 #: are the manufacturer's own.
