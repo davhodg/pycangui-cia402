@@ -4,7 +4,7 @@
     {
       "name": "cia402",
       "title": "Motor control (CiA 402)",
-      "description": "Drives a motor controller: its state, its mode, its target and what it is doing.",
+      "description": "Drives a CiA 402 motor controller over CANopen or EtherCAT: its state, mode and target, and what it is doing.",
       "version": "2.3",
       "api_version": 3,
       "url": "https://github.com/davhodg/pycangui-cia402/releases/download/v2.3/cia402-2.3.zip",

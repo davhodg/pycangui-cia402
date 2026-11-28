@@ -29,7 +29,10 @@ LISTING = ROOT / "plugins.json"
 #: Where a release's zip is, for plugins.json.
 RELEASE = "https://github.com/davhodg/pycangui-cia402/releases/download/v{version}/{zip}"
 PAGE = "https://github.com/davhodg/pycangui-cia402"
-DESCRIPTION = "Drives a motor controller: its state, its mode, its target and what it is doing."
+DESCRIPTION = (
+    "Drives a CiA 402 motor controller over CANopen or EtherCAT: its state, mode and target, "
+    "and what it is doing."
+)
 WANTED = (".py",)
 EPOCH = (1980, 1, 1, 0, 0, 0)
 
